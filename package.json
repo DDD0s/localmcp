@@ -1,7 +1,7 @@
 {
-  "name": "@daodao97/localmcp",
-  "version": "0.3.9",
-  "description": "Local MCP bridge for ChatGPT with files, shell, skills, pluggable MCP servers and multiple workspaces",
+  "name": "@ddd0s/localmcp",
+  "version": "0.4.0",
+  "description": "Enhanced LocalMCP for ChatGPT (增强版). Fork of daodao97/localmcp with a self-hosted relay, stable connector URL, and local tools.",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -41,12 +41,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/daodao97/localmcp.git"
+    "url": "git+https://github.com/DDD0s/localmcp.git"
   },
   "bugs": {
-    "url": "https://github.com/daodao97/localmcp/issues"
+    "url": "https://github.com/DDD0s/localmcp/issues"
   },
-  "homepage": "https://github.com/daodao97/localmcp#readme",
+  "homepage": "https://github.com/DDD0s/localmcp#readme",
   "keywords": [
     "mcp",
     "model-context-protocol",
@@ -55,7 +55,8 @@
     "agent",
     "skills"
   ],
-  "author": "daodao97",
+  "author": "DDD0s",
+  "contributors": ["daodao97"],
   "license": "MIT",
   "engines": {
     "node": ">=22"

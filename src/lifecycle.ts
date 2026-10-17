@@ -38,6 +38,23 @@ export function printStatus(value: Status) {
   console.log(`Status: ${value.status}\nPID: ${value.pid ?? '-'}\nMCP URL: ${value.url ?? '-'}\nConfig: ${value.config}\nLog: ${value.log}`);
 }
 
+export async function healthReport(): Promise<{ code: number; lines: string[] }> {
+  let current: Status;
+  try { current = await status(); }
+  catch (error) { return { code: 2, lines: ['unhealthy', error instanceof Error ? error.message : String(error)] }; }
+  if (current.status !== 'running' || !current.ready) return { code: 1, lines: ['unhealthy', `status: ${current.status}`, `ready: ${current.ready}`, `log: ${current.log}`] };
+  try {
+    const settings = JSON.parse(await readFile(resolve(stateDir, 'worker.json'), 'utf8')) as { workerUrl?: string };
+    if (!settings.workerUrl) return { code: 1, lines: ['unhealthy', 'relay: worker.json has no workerUrl'] };
+    const response = await fetch(new URL('/healthz', settings.workerUrl), { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) return { code: 1, lines: ['unhealthy', `pid: ${current.pid}`, `relay: HTTP ${response.status}`] };
+    const body = await response.json() as { protocol?: number };
+    return { code: 0, lines: ['healthy', `pid: ${current.pid}`, `url: ${current.url ?? '-'}`, `relay: ${settings.workerUrl}`, `protocol: ${body.protocol ?? 1}`] };
+  } catch (error) {
+    return { code: 1, lines: ['unhealthy', `pid: ${current.pid}`, `relay: ${error instanceof Error ? error.message : String(error)}`] };
+  }
+}
+
 // Serialize lifecycle commands, including concurrent startup from different terminals.
 async function locked<T>(action: () => Promise<T>): Promise<T> {
   await mkdir(stateDir, {recursive: true, mode: 0o700});

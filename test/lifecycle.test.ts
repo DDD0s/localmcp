@@ -4,10 +4,8 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {fork,execFile} from 'node:child_process';
-import {promisify} from 'node:util';
 import {createConnection} from 'node:net';
 import {controlEndpoint} from '../src/control-endpoint.js';
-const exec=promisify(execFile);
 
 test('control endpoints use normalized, directory-specific Windows pipes and Unix socket files',()=>{
   const endpoint=controlEndpoint('C:\\Users\\chy\\.localmcp','win32');
@@ -26,8 +24,14 @@ test('native IPC supports status, idempotent start, reload, stop and restart', {
   const env={...process.env,HOME:home,USERPROFILE:home};
   const children:ReturnType<typeof fork>[]=[];
   t.after(async()=>{for(const child of children)if(child.exitCode===null)child.kill();await new Promise(r=>setTimeout(r,200));await rm(home,{recursive:true,force:true});});
-  const cli=async(command:string)=>(await exec(process.execPath,[resolve('dist/index.js'),command],{env,timeout:10000})).stdout;
-  assert.match(await cli('status'),/Status: stopped/);
+  const cli=async(command:string)=>await new Promise<{code:number;stdout:string}>((done)=>{
+    execFile(process.execPath,[resolve('dist/index.js'),command],{env,timeout:10000},(error,stdout)=>{
+      done({code:typeof error?.code==='number'?error.code:error?1:0,stdout:stdout??''});
+    });
+  });
+  const stopped=await cli('status');
+  assert.equal(stopped.code,1);
+  assert.match(stopped.stdout,/Status: stopped/);
   for(let iteration=0;iteration<2;iteration++){
     const child=fork(resolve('test/fixtures/control-server.mjs'),[],{env,stdio:['ignore','ignore','pipe','ipc']});children.push(child);
     let errors='';child.stderr?.on('data',data=>{errors+=data;});
@@ -43,10 +47,13 @@ test('native IPC supports status, idempotent start, reload, stop and restart', {
       socket.on('data',chunk=>{data+=chunk;});socket.on('end',()=>{socket.destroy();done(data);});socket.on('error',reject);
     });
     assert.equal(JSON.parse(response).pid,child.pid);
-    assert.match(await cli('status'),new RegExp(`PID: ${child.pid}`));
-    assert.match(await cli('start'),new RegExp(`PID: ${child.pid}`));
-    assert.match(await cli('reload'),/Config: reloads:1/);
-    assert.match(await cli('stop'),/Status: stopped/);
-    assert.match(await cli('stop'),/Status: stopped/);
+    const running=await cli('status');
+    assert.equal(running.code,0);
+    assert.match(running.stdout,new RegExp(`PID: ${child.pid}`));
+    assert.match((await cli('start')).stdout,new RegExp(`PID: ${child.pid}`));
+    assert.match((await cli('reload')).stdout,/Config: reloads:1/);
+    assert.match((await cli('stop')).stdout,/Status: stopped/);
+    assert.equal((await cli('stop')).code,0);
+    assert.match((await cli('status')).stdout,/Status: stopped/);
   }
 });

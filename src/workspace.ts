@@ -21,8 +21,19 @@ function globToRegExp(glob: string) {
   return new RegExp(out + '$');
 }
 
+function normalizePath(path: string) {
+  const resolved = resolve(path);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+export function isPathInside(root: string, target: string) {
+  const base = normalizePath(root);
+  const child = normalizePath(target);
+  return child === base || child.startsWith(base.endsWith(sep) ? base : base + sep);
+}
+
 export class Workspace {
-  constructor(readonly root:string) {}
+  constructor(readonly root: string, private readonly allowedDirectories: readonly string[] = []) {}
 
   async path(input: string, createParents = false): Promise<string> {
     const target = resolve(this.root, input);
@@ -44,6 +55,7 @@ export class Workspace {
         }
       }
     }
+    if (this.allowedDirectories.length && !this.allowedDirectories.some(dir => isPathInside(dir, target))) throw new Error('Path is outside the configured allowed directories');
     return target;
   }
 
