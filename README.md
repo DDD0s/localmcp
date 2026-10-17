@@ -1,26 +1,66 @@
-# LocalMCP - 榨干 ChatGPT 的所有价值
+# LocalMCP 增强版
+
+这是 [daodao97/localmcp](https://github.com/daodao97/localmcp) 的增强版（enhanced edition），由 [DDD0s/localmcp](https://github.com/DDD0s/localmcp) 自行维护。上游仓库已停止更新（npm `@daodao97/localmcp` 最后版本 0.3.9）。本仓库保留原作者版权与 MIT 许可证，并在此基础上继续开发。
 
 让 ChatGPT 网页端使用你的本机开发能力：文件操作、Shell、持久进程、Skills 和可插拔 MCP Server。
 
 ![LocalMCP 工作原理：ChatGPT 经 Cloudflare Worker 中继，连接本机 Agent 和工具](localmcp.png)
 
-本机主动通过 WebSocket 连接 Cloudflare Worker，由 Worker 负责认证与请求中继，无需公网 IP 或开放入站端口。
+本机主动通过 WebSocket 连接 Cloudflare Worker，由 Worker 负责认证与请求中继，无需公网 IP 或开放入站端口。命令行名称仍是 `localmcp`。
+
+**English:** This fork keeps the same CLI and `~/.localmcp` config. New installs should use GitHub (or, after publish, `@ddd0s/localmcp`) instead of `@daodao97/localmcp`. Existing connector URLs are kept.
+
+## 相对上游的变化
+
+| 能力 | 增强版 |
+| --- | --- |
+| 中继 | 可部署到自己的 Cloudflare 账号；不设置时仍使用原来的公共中继 |
+| MCP URL | 重装、重新注册、更换中继主机时保持 device id 与 token；支持自定义域名 |
+| 409 | 已认证的 Agent 可接管崩溃或重启后留下的会话；未声明接管的第二个客户端会得到明确错误 |
+| 速度 | 工具服务跑在 Agent 进程内；自建中继协商更大分片，重复文本会 gzip |
+| 恢复 | 断线指数退避重连；`status` / `health` 带退出码；Linux systemd 与 Windows 登录自启 |
+| 桌面 | 遵守 `HTTP(S)_PROXY`（含 `127.0.0.1:7897`），本机地址不走代理；日志带时间，退出会关掉连接 |
+| 权限 | 可单独关闭文件写入和 Shell；可用 `allowedDirectories` 限制目录。默认与旧版相同 |
+
+## 从 `@daodao97/localmcp` 迁移
+
+已有 `~/.localmcp/worker.json` 和 `localmcp.json` 不用删，MCP URL 不会变。
+
+```sh
+npm uninstall -g @daodao97/localmcp
+npm install -g github:DDD0s/localmcp
+localmcp
+```
+
+Windows PowerShell 同样使用上面的 npm 命令。升级后会多写一份 `~/.localmcp/identity.json`，用来在 `worker.json` 丢失时恢复同一条 URL。
+
+包尚未发布到 npm。发布之后也可以：
+
+```sh
+npm install -g @ddd0s/localmcp
+```
+
+自己更新：
+
+```sh
+localmcp update
+```
+
+它执行的是 `npm install -g github:DDD0s/localmcp`，不依赖 npm 上的旧包名。
 
 ## 快速开始
 
-默认使用公共中继服务，无需自建 Worker。
+不设置中继地址时，仍使用原来的公共中继，已有用户无需改连接器。
 
 ### 第一步：准备环境
 
 - 安装 **Node.js 22+**，在终端运行 `node -v` 确认版本。
 - 准备 ChatGPT 账号。
 
-### 第二步：安装并启动 LocalMCP
-
-打开终端，依次执行：
+### 第二步：安装并启动
 
 ```sh
-npm install -g @daodao97/localmcp
+npm install -g github:DDD0s/localmcp
 localmcp
 ```
 
@@ -58,110 +98,156 @@ localmcp
 <details>
 <summary>遇到问题？</summary>
 
-- **找不到 `localmcp` 命令**：确认安装成功，再重新打开终端。
-- **启动失败**：运行 `localmcp status`，查看 `Log:` 指向的日志。
+- **找不到 `localmcp` 命令**：确认安装成功，再重新打开终端。Windows 有时需要新开一个终端。
+- **启动失败**：运行 `localmcp status`，查看 `Log:` 指向的日志（`~/.localmcp/agent.log`）。
+- **本机开了 127.0.0.1:7897 这类 HTTP 代理**：先设置 `HTTPS_PROXY` 和 `HTTP_PROXY` 再启动，见下文。
 - **ChatGPT 无法连接**：确认本机服务已启动、网络正常，URL 复制完整，身份验证为 **None**。
+- **日志里出现 409**：公共中继遇到残留会话时仍可能返回 409，并会按退避重试。自建中继会在重启时直接接管该会话。
 - **找不到开发者模式或插件**：检查账号权限，确认插件已安装，并新建对话。操作入口见 [OpenAI 官方说明](https://developers.openai.com/plugins/quickstart/)。
 
 </details>
 
 ## 常用命令
 
-| 命令 | 用途 |
-| --- | --- |
-| `localmcp` | 启动后台服务，已运行时复用已有进程 |
-| `localmcp status` | 查看状态、MCP URL 和日志路径 |
-| `localmcp stop` | 停止后台服务 |
-| `localmcp reload` | 校验并重新加载配置 |
-| `localmcp agent` | 前台运行，便于调试 |
+| 命令 | 用途 | 退出码 |
+| --- | --- | --- |
+| `localmcp` | 启动后台服务，已运行时复用已有进程 | 启动失败为非 0 |
+| `localmcp status` | 查看状态、MCP URL 和日志路径 | 运行且就绪为 0，否则 1 |
+| `localmcp health` | 检查本机进程，并请求中继 `/healthz` | 0 健康，1 未运行或中继不可达，2 本地错误 |
+| `localmcp stop` | 停止后台服务 | |
+| `localmcp reload` | 校验并重新加载配置 | |
+| `localmcp agent` | 前台运行，便于调试 | |
+| `localmcp update` | 从 GitHub 安装当前增强版 | |
+| `localmcp relay` | 查看或保存自建中继地址 | |
+| `localmcp autostart install` | 安装用户级自启 | |
+| `localmcp version` | 打印 `@ddd0s/localmcp` 与版本号 | |
 
-日志：`~/.localmcp/agent.log`。停止服务或重启电脑后，运行 `localmcp` 即可重新启动。
+脚本里用 `localmcp health`。`status` 在进程没起来时返回 1，便于 `localmcp status && ...`。
 
-## 高阶用法：自建 Worker（可选）
+日志：`~/.localmcp/agent.log`。停止服务或重启电脑后，运行 `localmcp` 即可重新启动。断线后 Agent 会按 1s、2s、4s… 最多 30s 加抖动重连，不会重放已经发出的工具调用。
 
-需要自己的中继服务时，准备 Cloudflare 和 GitHub 账号，按以下步骤部署。使用公共中继可跳过本节。
+## 自建中继
 
-本节终端命令适用于 macOS / Linux。
+公共中继仍是默认值：`https://localmcp-relay.daodao973597.workers.dev`。需要自己的地址、自定义域名，或崩溃后立即接管会话时，把本仓库的 Worker 部署到**你自己的** Cloudflare 账号。
 
-### 第一步：部署到 Cloudflare
+### 第一步：部署 Worker
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/daodao97/localmcp)
-
-点击按钮，按提示登录、连接 GitHub、创建仓库并点击 **Deploy**。数据库和密钥自动配置，详见 [Cloudflare 官方说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
-
-部署后，在 Worker 的 **Settings → Domains & Routes** 中复制 `workers.dev` 地址，例如 `https://localmcp-relay.YOUR-SUBDOMAIN.workers.dev`。
-
-<details>
-<summary>通过命令行部署</summary>
+准备 Cloudflare 账号。在仓库根目录：
 
 ```sh
-git clone https://github.com/daodao97/localmcp.git
+git clone https://github.com/DDD0s/localmcp.git
 cd localmcp
 npm ci
 npx wrangler login
 npm run worker:deploy
 ```
 
-复制输出中的 Worker 地址，继续下一步。
+也可以用部署按钮：[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DDD0s/localmcp)
 
-</details>
+部署配置在 [wrangler.jsonc](wrangler.jsonc)：Worker 名称 `localmcp-relay`，入口 `worker/index.ts`，Durable Object 类 `McpRelay`。`npm run worker:deploy` 就是 `wrangler deploy --config wrangler.jsonc`。
 
-### 第二步：连接本机
+部署完成后，在输出或 **Settings → Domains & Routes** 里复制地址，例如 `https://localmcp-relay.<你的子域>.workers.dev`。
 
-已使用过 LocalMCP 的用户，先停止服务并备份旧凭证。已有凭证时，仅设置新地址不会切换 Worker。
+检查：
+
+```sh
+curl https://localmcp-relay.<你的子域>.workers.dev/healthz
+```
+
+返回里应包含 `"ok":true`、`"service":"localmcp-relay"`、`"registration":true`，以及 `"protocol":2`。`protocol: 2` 表示这是增强版中继（稳定重绑、会话接管、大分片和 gzip）。
+
+### 第二步：可选自定义域名
+
+在 `wrangler.jsonc` 里取消注释并改成你的域名：
+
+```jsonc
+"vars": { "PUBLIC_BASE_URL": "https://mcp.example.com" },
+"routes": [{ "pattern": "mcp.example.com", "custom_domain": true }]
+```
+
+再次 `npm run worker:deploy`。ChatGPT 里使用的源站由 `PUBLIC_BASE_URL` 决定；Agent 仍然连你配置的 Worker 源站。两者必须指向同一个 Worker。
+
+### 第三步：让本机使用这个中继
+
+不要删除已有凭证。`localmcp relay` 只改地址，device id 和 token 保持不变，因此 MCP URL 的路径不变。只有主机名会随中继或自定义域名改变。
 
 ```sh
 localmcp stop
-mv ~/.localmcp/worker.json ~/.localmcp/worker.json.backup-$(date +%Y%m%d%H%M%S)
+localmcp relay https://localmcp-relay.<你的子域>.workers.dev
+# 若配置了自定义域名：
+localmcp relay https://localmcp-relay.<你的子域>.workers.dev --public https://mcp.example.com
+localmcp
 ```
 
-首次使用只需先安装 `npm install -g @daodao97/localmcp`；没有 `worker.json` 时跳过备份。
-
-将示例地址替换为第一步的 Worker 地址，启动服务：
+也可以只用自定义域名作为连接地址：
 
 ```sh
-LOCALMCP_WORKER_URL=https://localmcp-relay.YOUR-SUBDOMAIN.workers.dev localmcp
+localmcp relay https://mcp.example.com
 ```
 
-连接成功后会输出新的 MCP URL，并将凭证保存到 `~/.localmcp/worker.json`。以后直接运行 `localmcp`，无需重复设置地址或运行 `worker:setup`、`worker:secrets`。
+环境变量（当前进程有效，写入配置后可不再设置）：
 
-### 第三步：更新 ChatGPT 连接
+| 变量 | 作用 |
+| --- | --- |
+| `LOCALMCP_WORKER_URL` | 中继源站，须为 HTTPS 源站；本机调试可用 `http://127.0.0.1` |
+| `LOCALMCP_PUBLIC_URL` | 展示给 ChatGPT 的源站，用于自定义域名 |
 
-运行 `localmcp status`，复制新的完整 MCP URL，按[快速开始第四步](#第四步在-chatgpt-中添加-localmcp)创建新插件，再按[第五步](#第五步开始使用)验证调用。可命名为 `LocalMCP-自建`，原插件不会自动切换地址。
+第一次在增强版中继上注册后，重复注册同一组凭证会得到同一个 `mcpUrl`。凭证不匹配时返回 HTTP 409，不会覆盖原来的设备。
 
-<details>
-<summary>检查 Worker 状态</summary>
+如果把地址指到**不支持稳定重绑**的旧中继，程序会拒绝换发新凭证，避免悄悄改掉 ChatGPT 里的 URL。
 
-替换为你的 Worker 域名后执行：
+## 代理、自启和关闭
+
+Windows 主环境若通过 `127.0.0.1:7897` 上网，在启动前设置（系统环境变量或当前终端均可）：
+
+```bat
+set HTTP_PROXY=http://127.0.0.1:7897
+set HTTPS_PROXY=http://127.0.0.1:7897
+localmcp
+```
+
+macOS / Linux：
 
 ```sh
-curl https://localmcp-relay.YOUR-SUBDOMAIN.workers.dev/healthz
-# 预期：{"ok":true,"service":"localmcp-relay","registration":true}
+export HTTPS_PROXY=http://127.0.0.1:7897
+export HTTP_PROXY=http://127.0.0.1:7897
+localmcp
 ```
 
-此结果表示中继可用，本机连接仍需通过 ChatGPT 调用验证。
+`127.0.0.1`、`localhost`、`::1` 会加入 `NO_PROXY`，本机工具调用不经过代理。日志里会出现 `Using HTTP proxy ...`。
 
-</details>
+自启：
+
+```sh
+localmcp autostart install
+localmcp autostart status
+localmcp autostart remove
+```
+
+- Linux：写入 `~/.config/systemd/user/localmcp.service` 并尝试 `systemctl --user enable --now`。没有 systemd 时仍会留下 unit 文件，并打印手动启用的命令。
+- Windows：写入启动文件夹里的 `localmcp.cmd`，并尝试创建登录任务 `LocalMCP`。安装时若已设置代理，会写进 unit 或 cmd。
+
+`localmcp stop`、Ctrl+C、SIGTERM（Windows 上还有 SIGBREAK）会关闭中继 WebSocket、停掉子进程并删除控制套接字。请用 `localmcp stop`，不要直接结束进程树。
 
 ## 配置与扩展
 
-### 工作区与工具开关
+### 工作区、写入和目录范围
 
-首次启动会创建 `~/.localmcp/localmcp.json`，默认工作区为用户主目录（`~`），开启文件、Shell 和持久进程工具。
-
-用文本编辑器打开配置，将示例路径替换为已有的项目目录。Windows 路径可写成 `C:/Users/你的用户名/code/project`。
+首次启动会创建 `~/.localmcp/localmcp.json`。默认工作区是用户主目录（`~`），文件、文件写入、Shell 和持久进程都开启，不额外限制目录。这与旧版行为一致。
 
 ```json
 {
   "workspaces": {
-    "project": "/Users/me/code/project"
+    "project": "C:/Users/你的用户名/code/project"
   },
   "defaultWorkspace": "project",
   "features": {
     "files": true,
+    "fileWrites": true,
     "shell": true,
     "processes": true
   },
+  "allowedDirectories": [],
   "skills": {
     "dir": "skills",
     "enabled": ["local-development"]
@@ -170,15 +256,16 @@ curl https://localmcp-relay.YOUR-SUBDOMAIN.workers.dev/healthz
 }
 ```
 
-- **多工作区**：在 `workspaces` 中添加路径，调用工具时用 `workspace` 选择，省略时使用默认工作区。
-- **工具开关**：在 `features` 中用 `true` / `false` 启用或关闭工具；持久进程依赖 Shell 开启。
-- **Skills**：将说明放入 `~/.localmcp/skills/<名称>/SKILL.md`，在 `skills.enabled` 中启用。
+- **多工作区**：在 `workspaces` 中添加路径。调用工具时用 `workspace` 选择，省略时用默认工作区。Windows 路径建议写成 `C:/Users/...`。
+- **关闭文件写入**：`"fileWrites": false` 会去掉 `write_file`、`edit_file`、`apply_patch`、`create_directory`、`delete_path`、`move_path`，读取仍然可用。
+- **关闭 Shell**：`"shell": false` 会去掉命令和持久进程。持久进程依赖 Shell。
+- **目录范围**：`allowedDirectories` 为空或省略时，整个工作区可用。写上路径后，文件工具和命令的工作目录必须落在其中之一。Shell 不是沙箱，命令内容仍可能访问其他路径；需要硬边界时同时把 `shell` 设为 `false`。
 
-完整示例见 [localmcp.example.json](localmcp.example.json)。可通过 `LOCALMCP_CONFIG` 指定其他配置文件。
+完整示例见 [localmcp.example.json](localmcp.example.json)。可用 `LOCALMCP_CONFIG` 指定其他配置文件。
 
 ### 外部 MCP 服务
 
-在 `mcpServers` 中添加服务。例如，已安装 `cua-driver` 时，可加入以下 Computer Use 配置：
+在 `mcpServers` 中添加服务。例如已安装 `cua-driver` 时：
 
 ```json
 {
@@ -192,73 +279,84 @@ curl https://localmcp-relay.YOUR-SUBDOMAIN.workers.dev/healthz
 }
 ```
 
-外部 MCP 通过三个固定工具发现和调用：
-
 | 工具 | 用途 |
 | --- | --- |
 | `list_mcp_servers` | 列出已加载的服务 |
 | `list_mcp_tools` | 查询指定 `server` 的工具及参数 |
 | `call_mcp_tool` | 传入 `server`、`tool` 和 `arguments` 调用工具 |
 
-例如，先用 `list_mcp_tools({"server":"computer"})` 查看参数，再用 `call_mcp_tool({"server":"computer","tool":"list_apps","arguments":{}})` 调用。服务端校验参数并保留图片、结构化结果和错误状态；统一入口可能执行写入、命令及网络操作。
+多个外部服务会并行启动。统一入口可能执行写入、命令及网络操作。
 
 ### 配置生效与重载
 
-主配置保存后约一秒自动生效，无需手动重载。更新失败时保留旧配置，错误写入日志。
+主配置保存后约一秒自动生效，不重启 Agent，也不改变 MCP URL。更新失败时保留旧配置，错误写入日志。
 
 | 修改内容 | 生效方式 |
 | --- | --- |
-| 主配置（含 `LOCALMCP_CONFIG` 指定的文件） | 自动更新；不重启 Agent、不改变 MCP URL、不打断当前调用或已有进程 |
+| 主配置（含 `LOCALMCP_CONFIG`） | 自动更新；不打断当前调用或已有进程 |
 | `SKILL.md` 文件内容 | 在本机终端运行 `localmcp reload` |
-| Worker 地址或凭证 | 停止后重新启动；切换 Worker 见上一节 |
+| 中继地址或自定义域名 | `localmcp relay ...` 后重新启动 |
 
-关闭 Shell 或持久进程工具只限制后续调用，不会终止已有进程。`localmcp reload` 会重启内部服务，请在本机终端执行，不要通过 LocalMCP 的 `run_command` 调用。
+`localmcp reload` 会重新加载内部服务，请在本机终端执行，不要通过 LocalMCP 的 `run_command` 调用。
 
-MCP 配置更新后，用 `list_mcp_servers` / `list_mcp_tools` 查看；Skills 更新后，用 `list_skills` / `read_skill` 查看。外部 MCP 和 Skills 的变化不会改变顶层工具列表，内置工具开关会改变该列表。
+### 速度
 
-<details>
-<summary>从旧版迁移</summary>
+请求路径是：ChatGPT HTTP → 自建或公共 Worker → Durable Object → 本机 WebSocket → 进程内 MCP 工具 → 原路返回。中继不是轮询。
 
-升级到固定工具入口后，刷新客户端工具列表并新建会话。旧的 `<server>_<tool>` 调用已不支持，请改用 `call_mcp_tool`。
+在这台 Linux 测量机上，相对 0.3.9 的本机路径：
 
-npm 升级不会覆盖已有的 `~/.localmcp/skills/`，其中引用旧工具名的说明需同步修改。
+| 项目 | 之前 | 增强版 |
+| --- | --- | --- |
+| 工具进程就绪 | 另起 HTTP 子进程约 216 ms | 同一进程内约 1.4 ms |
+| `tools/list` 30 次 | 约 3.2 ms/次（回环 HTTP） | 约 1.2 ms/次 |
+| 约 380 KB 可压缩载荷 | 16 个 24 KB 帧，约 381 KB | 自建中继 1 帧，约 1.1 KB |
+| 不可压缩数据 | 24 KB 分片 | 保持原样，分片提高到 120 KB |
 
-</details>
+公共中继不宣告 `protocol: 2`，因此仍使用 24 KB、不压缩的旧帧，避免和现网 Worker 不兼容。ChatGPT 到 Worker 仍是一次 JSON 响应，没有改成 SSE。
+
+数字来自 `node scripts/bench-path.mjs --http`。广域网往返不在这组数字里；自建中继上，大段重复的命令输出或文本会少很多 WebSocket 消息。
 
 ### 其他连接方式
 
-**stdio**：供支持该协议的 MCP 客户端使用。
+**stdio**（供支持该协议的 MCP 客户端）：
 
 ```sh
 localmcp stdio
 ```
 
-**本地 HTTP**：将占位文字替换为至少 32 字符的密钥后，在 macOS / Linux 终端执行：
+**本地 HTTP**（密钥至少 32 字符）：
 
 ```sh
 LOCALMCP_TOKEN='替换为至少32字符的密钥' localmcp http
 ```
 
-## 开发
+Windows PowerShell：`$env:LOCALMCP_TOKEN='替换为至少32字符的密钥'; localmcp http`
 
-修改源码时使用；普通使用无需执行。
+## 从源码构建
 
-### 第一步：获取源码
+普通使用用上面的 GitHub 安装即可，`npm install -g github:DDD0s/localmcp` 会在安装时编译。需要改源码时：
 
 ```sh
-git clone https://github.com/daodao97/localmcp.git
+git clone https://github.com/DDD0s/localmcp.git
 cd localmcp
 npm ci
-```
-
-### 第二步：检查与构建
-
-```sh
 npm run check
 npm test
 npm run build
+node dist/index.js version
 ```
+
+## 发布到 npm（维护者）
+
+当前不会自动发布。包名 `@ddd0s/localmcp` 在编写时未被占用（`localmcp-plus` 同样空闲，选用了与 GitHub 账号一致的 scope）。
+
+1. 在 npm 上使用账号 `ddd0s`（scope 必须与包名一致）。
+2. `npm login`
+3. `npm publish --access public`
+
+发布后，安装命令可以改成 `npm install -g @ddd0s/localmcp`。在此之前请使用 `github:DDD0s/localmcp`。
 
 ## License
 
-MIT
+MIT. Copyright (c) 2026 daodao97. Copyright (c) 2026 DDD0s.
+The original project is [daodao97/localmcp](https://github.com/daodao97/localmcp).
