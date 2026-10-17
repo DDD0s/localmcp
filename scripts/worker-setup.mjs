@@ -12,9 +12,10 @@ try {settings=JSON.parse(await readFile(workerFile,'utf8'));}
 catch(error){if(error.code!=='ENOENT')throw error;settings={workerUrl:'https://REPLACE-WITH-YOUR-WORKER.workers.dev',agentToken:randomBytes(32).toString('hex'),mcpToken:randomBytes(32).toString('hex')};}
 if(process.argv[2])settings.workerUrl=new URL(process.argv[2]).origin;
 for(const key of ['agentToken','mcpToken'])if(!/^[a-f0-9]{64}$/.test(settings[key]))throw new Error(`Invalid ${key}`);
-delete settings.deviceId;
+if(settings.deviceId&&!/^[0-9a-f-]{36}$/.test(settings.deviceId))throw new Error('Invalid deviceId');
 await writeFile(workerFile,JSON.stringify(settings,null,2),{mode:0o600});
 await chmod(workerFile,0o600);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 await writeFile(secretsFile,JSON.stringify({MCP_TOKEN_HASH:hash(settings.mcpToken),AGENT_TOKEN_HASH:hash(settings.agentToken)}),{mode:0o600});
 console.log(`Worker settings saved to ${workerFile}; only token hashes are uploaded to the Worker.`);
+console.log('Enhanced edition: prefer `localmcp relay <worker-origin>` so the saved device id and MCP URL stay stable.');

@@ -5,6 +5,10 @@
   "compatibility_date": "2026-09-06",
   "workers_dev": true,
   "observability": { "enabled": false },
+  // Optional custom domain advertised as the ChatGPT MCP origin.
+  // Uncomment both, replace the hostname, then `npm run worker:deploy`.
+  // "vars": { "PUBLIC_BASE_URL": "https://mcp.example.com" },
+  // "routes": [{ "pattern": "mcp.example.com", "custom_domain": true }],
   "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "McpRelay" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["McpRelay"] }]
 }

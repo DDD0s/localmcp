@@ -37,34 +37,85 @@ test('Worker + Durable Object + local agent: authenticated MCP, chunking and rec
   const registration=await fetch(origin+'/register',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});assert.equal(registration.status,201);
   const registered:any=await registration.json();assert.match(registered.deviceId,/^[0-9a-f-]{36}$/);assert.equal(registered.agentToken.length,64);assert.equal(registered.mcpToken.length,64);
   const url=registered.mcpUrl;const post=()=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});assert.equal((await post()).status,503);
+  const rebound=await fetch(origin+'/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId:registered.deviceId,agentToken:registered.agentToken,mcpToken:registered.mcpToken})});
+  assert.equal(rebound.status,201);
+  assert.equal((await rebound.json()).mcpUrl,url);
+  const clash=await fetch(origin+'/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId:registered.deviceId,agentToken:'d'.repeat(64),mcpToken:registered.mcpToken})});
+  assert.equal(clash.status,409);
+  const firstSocket=new WebSocket(origin.replace('http:','ws:')+`/agent/${registered.deviceId}`,{headers:{Authorization:`Bearer ${registered.agentToken}`}});
+  await new Promise<void>((resolve,reject)=>{firstSocket.once('open',()=>resolve());firstSocket.once('error',reject);});
+  const blocked=new WebSocket(origin.replace('http:','ws:')+`/agent/${registered.deviceId}`,{headers:{Authorization:`Bearer ${registered.agentToken}`}});
+  const blockedResult=await new Promise<{status:number;body:string}>((resolve,reject)=>{blocked.on('unexpected-response',(_req,res)=>{const chunks:Buffer[]=[];res.on('data',(chunk:Buffer)=>chunks.push(chunk));res.on('end',()=>{blocked.terminate();resolve({status:res.statusCode||0,body:Buffer.concat(chunks).toString()});});});blocked.on('error',()=>{});blocked.on('open',()=>{blocked.close();reject(new Error('Duplicate accepted'));});});
+  assert.equal(blockedResult.status,409);
+  assert.match(blockedResult.body,/agent_already_connected/);
+  const takeover=new WebSocket(origin.replace('http:','ws:')+`/agent/${registered.deviceId}`,{headers:{Authorization:`Bearer ${registered.agentToken}`,'x-localmcp-takeover':'1'}});
+  const [takeoverOpen,firstClose]=await Promise.all([
+    new Promise<void>((resolve,reject)=>{takeover.once('open',()=>resolve());takeover.once('error',reject);}),
+    new Promise<number>((resolve)=>firstSocket.once('close',code=>resolve(code))),
+  ]);
+  assert.equal(takeoverOpen,undefined);
+  assert.equal(firstClose,4000);
+  takeover.close();
+  await new Promise(r=>setTimeout(r,100));
+  // After a reboot or network loss the old peer is stale: it never acknowledges the
+  // close frame. Calls must still reach the agent that took over.
+  const agentUrl=origin.replace('http:','ws:')+`/agent/${registered.deviceId}`;
+  const opened=(socket:WebSocket)=>new Promise<void>((resolve,reject)=>{socket.once('open',()=>resolve());socket.once('error',reject);});
+  const stale=new WebSocket(agentUrl,{headers:{Authorization:`Bearer ${registered.agentToken}`,'x-localmcp-takeover':'1'}});
+  await opened(stale);
+  stale.pause();
+  const fresh=new WebSocket(agentUrl,{headers:{Authorization:`Bearer ${registered.agentToken}`,'x-localmcp-takeover':'1'}});
+  await opened(fresh);
+  let freshAssembly:Assembly|undefined;
+  fresh.on('message',raw=>{
+    const message=raw.toString();
+    if(message==='pong')return;
+    const frame=parseFrame(message);
+    freshAssembly??=new Assembly();
+    const complete=freshAssembly.push(frame) as {value:{body:string}}|undefined;
+    if(!complete)return;
+    freshAssembly=undefined;
+    const request=JSON.parse(complete.value.body);
+    for(const out of frames(frame.id,{status:200,body:JSON.stringify({jsonrpc:'2.0',id:request.id,result:{from:'fresh'}})}))fresh.send(out);
+  });
+  const routed=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:7,method:'ping'})});
+  assert.equal(routed.status,200,await routed.clone().text());
+  assert.deepEqual((await routed.json()).result,{from:'fresh'});
+  stale.terminate();
+  fresh.close();
+  await new Promise(r=>setTimeout(r,100));
   assert.equal((await fetch(`${origin}/mcp/${registered.deviceId}/${mcpToken}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,404);
   await mkdir(join(root,'.localmcp'));
   await writeFile(join(root,'.localmcp/worker.json'),JSON.stringify({workerUrl:origin,agentToken:registered.agentToken,mcpToken:registered.mcpToken,deviceId:registered.deviceId}));
   async function cli(command?: string) {
-    return new Promise<string>((done, reject) => {
-      const child=spawn(process.execPath,[resolve('dist/index.js'),...(command?[command]:[])],{cwd:root,env:{...process.env,HOME:root,LOCALMCP_ROOT:root,LOCALMCP_AGENT_PORT:String(port+1),LOCALMCP_SHELL:'0'},stdio:['ignore','pipe','pipe']});
+    return new Promise<{code:number;output:string}>((done, reject) => {
+      const child=spawn(process.execPath,[resolve('dist/index.js'),...(command?[command]:[])],{cwd:root,env:{...process.env,HOME:root,USERPROFILE:root,LOCALMCP_ROOT:root,LOCALMCP_AGENT_PORT:String(port+1),LOCALMCP_SHELL:'0'},stdio:['ignore','pipe','pipe']});
       let output='';child.stdout.on('data',c=>{output+=c;});child.stderr.on('data',c=>{output+=c;});
       const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('CLI did not return: '+output));},25000);
       child.on('error',reject);
-      child.on('close',code=>{clearTimeout(timer);code===0?done(output):reject(new Error(output));});
+      child.on('close',code=>{clearTimeout(timer);const result={code:code??1,output};if(code===0||command==='status'||command==='health')done(result);else reject(new Error(output));});
     });
   }
-  assert.match(await cli('status'), /Status: stopped/);
+  const stopped=await cli('status');
+  assert.equal(stopped.code,1);
+  assert.match(stopped.output, /Status: stopped/);
   // Stale PID files must never cause signals to be sent to another process.
   await writeFile(join(root,'.localmcp/agent.pid'),String(process.pid));
-  assert.match(await cli('stop'), /Status: stopped/);
+  assert.match((await cli('stop')).output, /Status: stopped/);
   await assert.rejects(cli('reload'), /LocalMCP is stopped/);
   const starts=await Promise.all([cli(),cli(),cli('start')]);
-  const pid=starts[0].match(/PID: (\d+)/)?.[1];
+  const pid=starts[0].output.match(/PID: (\d+)/)?.[1];
   assert.ok(pid);
-  for(const output of starts) {
+  for(const {output} of starts) {
     assert.match(output,/Status: running/);
     assert.ok(output.includes(url));
     assert.equal(output.match(/PID: (\d+)/)?.[1],pid);
     assert.ok(output.includes('Config: '+join(root,'.localmcp/localmcp.json')));
     assert.ok(output.includes('Log: '+join(root,'.localmcp/agent.log')));
   }
-  assert.match(await cli('status'),new RegExp('PID: '+pid));
+  const running=await cli('status');
+  assert.equal(running.code,0);
+  assert.match(running.output,new RegExp('PID: '+pid));
   const client=new Client({name:'worker-test',version:'1'});
   await client.connect(new StreamableHTTPClientTransport(new URL(url)));
   const tools=await client.listTools();assert.equal(tools.tools.length,20);
@@ -93,8 +144,8 @@ test('Worker + Durable Object + local agent: authenticated MCP, chunking and rec
   }
   assert.ok(hot,'configuration should update without a reload command');
   const reloaded=await cli('status');
-  assert.ok(reloaded.includes(url));
-  assert.match(reloaded,new RegExp('PID: '+pid));
+  assert.ok(reloaded.output.includes(url));
+  assert.match(reloaded.output,new RegExp('PID: '+pid));
   const workspaces:any=await client.callTool({name:'list_workspaces',arguments:{}});
   assert.ok(workspaces.content[0].text.includes('reloaded'));
   assert.deepEqual(await client.listTools(),tools);
@@ -105,14 +156,26 @@ test('Worker + Durable Object + local agent: authenticated MCP, chunking and rec
   assert.equal(echoed.content[1].type,'image');
   assert.equal((await client.listTools()).tools.length,20);
   await client.close();
-  assert.match(await cli('stop'),/Status: stopped/);
-  assert.match(await cli('stop'),/Status: stopped/);
+  assert.match((await cli('stop')).output,/Status: stopped/);
+  assert.match((await cli('stop')).output,/Status: stopped/);
   assert.equal((await post()).status,503);
-  assert.match(await cli(),/Status: running/);
+  assert.match((await cli()).output,/Status: running/);
   const second=new Client({name:'reconnect-test',version:'1'});await second.connect(new StreamableHTTPClientTransport(new URL(url)));
   assert.equal((await second.listTools()).tools.length,20);await second.close();
   await cli('stop');
+  const identity=JSON.parse(await readFile(join(root,'.localmcp/identity.json'),'utf8'));
+  assert.equal(identity.deviceId,registered.deviceId);
+  assert.equal(identity.mcpToken,registered.mcpToken);
+  await rm(join(root,'.localmcp/worker.json'));
+  const restored=await cli();
+  assert.equal(restored.code,0);
+  assert.ok(restored.output.includes(url));
+  const healthy=await cli('health');
+  assert.equal(healthy.code,0);
+  assert.match(healthy.output,/healthy/);
+  assert.match(healthy.output,/protocol: 2/);
+  await cli('stop');
   await writeFile(join(root,'.localmcp/worker.json'),'{invalid');
   await assert.rejects(cli(), /startup failed/);
-  assert.match(await cli('status'), /Status: stopped/);
+  assert.match((await cli('status')).output, /Status: stopped/);
 });

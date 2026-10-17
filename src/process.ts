@@ -22,7 +22,7 @@ export class ProcessManager {
 
   start(command: string, cwd: string) {
     const env: NodeJS.ProcessEnv = {};
-    for (const key of ['PATH','HOME','USER','TMPDIR','LANG','SHELL','SystemRoot']) if (process.env[key]) env[key] = process.env[key];
+    for (const key of ['PATH','HOME','USER','USERPROFILE','APPDATA','LOCALAPPDATA','HOMEDRIVE','HOMEPATH','COMSPEC','PATHEXT','TMPDIR','TEMP','TMP','LANG','SHELL','SystemRoot','HTTP_PROXY','HTTPS_PROXY','NO_PROXY','ALL_PROXY','http_proxy','https_proxy','no_proxy','all_proxy']) if (process.env[key]) env[key] = process.env[key];
     const child = spawn(command, {cwd, shell: true, detached: process.platform !== 'win32', env, stdio: ['pipe','pipe','pipe']});
     const proc: ManagedProcess = {id: randomUUID(), child, command, cwd, stdout: '', stderr: '', stdoutOffset: 0, stderrOffset: 0, startedAt: new Date().toISOString(), exitCode: null, signal: null};
     const collect = (stream: 'stdout'|'stderr', chunk: Buffer) => {

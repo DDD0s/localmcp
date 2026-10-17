@@ -1,4 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { version } from '../version.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -11,15 +12,16 @@ export class McpLoader {
   private track<T>(operation:Promise<T>):Promise<T>{this.pending.add(operation);return operation.finally(()=>this.pending.delete(operation));}
   constructor(private servers:Record<string,McpServerConfig>){}
   async start(){
+    const entries=Object.entries(this.servers);
     try {
-      for(const [name,cfg] of Object.entries(this.servers)){
-        const client=new Client({name:`localmcp-${name}`,version:'0.3.0'});
+      await Promise.all(entries.map(async ([name,cfg])=>{
+        const client=new Client({name:`localmcp-${name}`,version});
         const transport=new StdioClientTransport({command:cfg.command,args:cfg.args||[],env:cfg.env,stderr:'inherit'});
         const server={name,client,tools:[] as Tool[]};
         this.loaded.push(server);
         await client.connect(transport);
         await this.refresh(server);
-      }
+      }));
     } catch(error) {await this.close();throw error;}
   }
   private getServer(name:string):Loaded {

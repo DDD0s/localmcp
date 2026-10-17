@@ -3,7 +3,7 @@ export function runCommand(command: string, cwd: string, timeoutMs: number) {
   return new Promise<{exitCode: number | null; signal: string | null; output: string; timedOut: boolean; truncated: boolean}>((resolve, reject) => {
     // Deliberately do not pass the server's credentials to commands.
     const env: NodeJS.ProcessEnv = {};
-    for (const key of ['PATH', 'HOME', 'USER', 'TMPDIR', 'LANG', 'SHELL', 'SystemRoot']) if (process.env[key]) env[key] = process.env[key];
+    for (const key of ['PATH', 'HOME', 'USER', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'HOMEDRIVE', 'HOMEPATH', 'COMSPEC', 'PATHEXT', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'SHELL', 'SystemRoot', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy']) if (process.env[key]) env[key] = process.env[key];
     const child = spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', env, stdio: ['ignore','pipe','pipe'] });
     let output = Buffer.alloc(0), timedOut = false, truncated = false;
     const stop = () => { try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch {} };

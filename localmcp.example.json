@@ -5,9 +5,11 @@
   "defaultWorkspace": "home",
   "features": {
     "files": true,
+    "fileWrites": true,
     "shell": true,
     "processes": true
   },
+  "allowedDirectories": [],
   "skills": {
     "dir": "skills",
     "enabled": ["local-development"]
