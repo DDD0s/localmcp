@@ -22,3 +22,4 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: node --import tsx --test test/lifecycle.test.ts
+      - run: node --import tsx --test test/enhanced.test.ts

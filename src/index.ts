@@ -131,21 +131,30 @@ async function relayCommand() {
 
 async function autostartCommand() {
   const action = process.argv[3] || 'status';
-  if (!['install', 'remove', 'status'].includes(action)) throw new Error('Usage: localmcp autostart [install|remove|status]');
-  const { autostart } = await import('./autostart.js');
+  if (!['install', 'remove', 'status', 'run'].includes(action)) throw new Error('Usage: localmcp autostart [install|remove|status|run [--detach]]');
+  const { autostart, superviseAgent } = await import('./autostart.js');
   const nodePath = process.execPath;
   const agentPath = fileURLToPath(new URL('./agent.js', import.meta.url));
-  console.log(await autostart(action as 'install' | 'remove' | 'status', { nodePath, agentPath }));
+  const cliPath = fileURLToPath(import.meta.url);
+  if (action === 'run') {
+    if (process.argv.includes('--detach')) {
+      // Startup-folder entry point: hand off to a supervisor without a console and return.
+      spawn(nodePath, [cliPath, 'autostart', 'run'], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env }).unref();
+      return;
+    }
+    await ensureInitialized();
+    const { logFile } = await import('./lifecycle.js');
+    process.exitCode = await superviseAgent({ nodePath, agentPath, logFile });
+    return;
+  }
+  console.log(await autostart(action as 'install' | 'remove' | 'status', { nodePath, agentPath, cliPath }));
 }
 
-function updateCommand() {
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  console.log('Updating the enhanced edition from GitHub (works before npm publish):\nnpm install -g github:DDD0s/localmcp\n');
-  return new Promise<void>(resolve => {
-    const child = spawn(npm, ['install', '-g', 'github:DDD0s/localmcp'], { stdio: 'inherit', shell: process.platform === 'win32' });
-    child.on('error', error => { console.error(error.message); process.exitCode = 1; resolve(); });
-    child.on('exit', code => { process.exitCode = code ?? 1; resolve(); });
-  });
+async function updateCommand() {
+  const { updateFromGitHub } = await import('./update.js');
+  const ref = process.argv[3] || 'main';
+  const installed = await updateFromGitHub({ ref, expectedName: packageName });
+  console.log(`Installed ${installed.name} ${installed.version}. A running agent keeps the old code until: localmcp stop && localmcp`);
 }
 
 main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); });

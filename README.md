@@ -28,9 +28,15 @@
 
 ```sh
 npm uninstall -g @daodao97/localmcp
-npm install -g github:DDD0s/localmcp
+git clone --depth 1 https://github.com/DDD0s/localmcp.git
+cd localmcp
+npm ci --ignore-scripts
+npm pack
+npm install -g ./ddd0s-localmcp-0.4.0.tgz
 localmcp
 ```
+
+> `npm install -g github:DDD0s/localmcp` does not work with npm 11: it exits 0 but builds no `dist/` and creates no `localmcp` command. Build the tarball as above (`npm pack` prints its file name), or install a release tarball once one is published. After the first install, `localmcp update` repeats these steps.
 
 Windows PowerShell 同样使用上面的 npm 命令。升级后会多写一份 `~/.localmcp/identity.json`，用来在 `worker.json` 丢失时恢复同一条 URL。
 
@@ -46,7 +52,7 @@ npm install -g @ddd0s/localmcp
 localmcp update
 ```
 
-它执行的是 `npm install -g github:DDD0s/localmcp`，不依赖 npm 上的旧包名。
+It clones `DDD0s/localmcp` into a temporary directory, builds a tarball with `npm pack` and installs it with `npm install -g`. Pick a version with `localmcp update <branch-or-tag>`; a checkout that is not `@ddd0s/localmcp` (for example the upstream package) is refused. A running agent keeps the old code until `localmcp stop` and `localmcp`.
 
 ## 快速开始
 
@@ -60,7 +66,11 @@ localmcp update
 ### 第二步：安装并启动
 
 ```sh
-npm install -g github:DDD0s/localmcp
+git clone --depth 1 https://github.com/DDD0s/localmcp.git
+cd localmcp
+npm ci --ignore-scripts
+npm pack
+npm install -g ./ddd0s-localmcp-0.4.0.tgz
 localmcp
 ```
 
@@ -117,7 +127,7 @@ localmcp
 | `localmcp stop` | 停止后台服务 | |
 | `localmcp reload` | 校验并重新加载配置 | |
 | `localmcp agent` | 前台运行，便于调试 | |
-| `localmcp update` | 从 GitHub 安装当前增强版 | |
+| `localmcp update [ref]` | 从 GitHub 安装当前增强版 | |
 | `localmcp relay` | 查看或保存自建中继地址 | |
 | `localmcp autostart install` | 安装用户级自启 | |
 | `localmcp version` | 打印 `@ddd0s/localmcp` 与版本号 | |
@@ -125,6 +135,8 @@ localmcp
 脚本里用 `localmcp health`。`status` 在进程没起来时返回 1，便于 `localmcp status && ...`。
 
 日志：`~/.localmcp/agent.log`。停止服务或重启电脑后，运行 `localmcp` 即可重新启动。断线后 Agent 会按 1s、2s、4s… 最多 30s 加抖动重连，不会重放已经发出的工具调用。
+
+The agent also retries with the same backoff when the relay refuses the WebSocket (HTTP 409, 5xx, a proxy error). Agent exit codes: `0` stopped on request, `1` crashed or failed to start, `3` another authenticated agent took over this device, `4` another agent already serves this `~/.localmcp`. systemd and the Windows autostart supervisor restart the agent only after `1`.
 
 ## 自建中继
 
@@ -225,7 +237,8 @@ localmcp autostart remove
 ```
 
 - Linux：写入 `~/.config/systemd/user/localmcp.service` 并尝试 `systemctl --user enable --now`。没有 systemd 时仍会留下 unit 文件，并打印手动启用的命令。
-- Windows：写入启动文件夹里的 `localmcp.cmd`，并尝试创建登录任务 `LocalMCP`。安装时若已设置代理，会写进 unit 或 cmd。
+- Windows: writes `localmcp.cmd` to the Startup folder. At login it starts a hidden supervisor (`localmcp autostart run`) that runs the agent without a console window, appends its output to `~/.localmcp/agent.log` and restarts it after a crash (3 s, doubling up to 60 s). `install` and `remove` also delete the `LocalMCP` logon task written by earlier 0.4.0 builds, which started a second agent.
+- Both: a proxy set at install time is written into the unit or the script. Exit codes `3` and `4` are final, so two machines sharing one identity no longer keep taking the session from each other. On Linux, a user unit starts at boot only after `loginctl enable-linger "$USER"`; otherwise it starts at login.
 
 `localmcp stop`、Ctrl+C、SIGTERM（Windows 上还有 SIGBREAK）会关闭中继 WebSocket、停掉子进程并删除控制套接字。请用 `localmcp stop`，不要直接结束进程树。
 
@@ -334,7 +347,7 @@ Windows PowerShell：`$env:LOCALMCP_TOKEN='替换为至少32字符的密钥'; lo
 
 ## 从源码构建
 
-普通使用用上面的 GitHub 安装即可，`npm install -g github:DDD0s/localmcp` 会在安装时编译。需要改源码时：
+For normal use, install as shown above. To work on the source:
 
 ```sh
 git clone https://github.com/DDD0s/localmcp.git
@@ -354,7 +367,7 @@ node dist/index.js version
 2. `npm login`
 3. `npm publish --access public`
 
-发布后，安装命令可以改成 `npm install -g @ddd0s/localmcp`。在此之前请使用 `github:DDD0s/localmcp`。
+After publishing, the install command becomes `npm install -g @ddd0s/localmcp`. Until then, build the tarball as in the install section, or attach it to a GitHub release and install from its URL.
 
 ## License
 

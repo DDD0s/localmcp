@@ -103,7 +103,7 @@ export async function control(command: 'start' | 'stop' | 'reload', initialize: 
         const log = await open(logFile, 'a', 0o600);
         try {
           child = spawn(process.execPath, [fileURLToPath(new URL('./agent.js', import.meta.url))], {
-            detached: true, stdio: ['ignore', log.fd, log.fd], env: process.env,
+            detached: true, stdio: ['ignore', log.fd, log.fd], env: process.env, windowsHide: true,
           });
           await new Promise<void>((ready, reject) => {child!.once('spawn', ready); child!.once('error', reject);});
           child.unref();

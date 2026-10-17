@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rm, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { stateDir, logFile, serveControl, type Status } from './lifecycle.js';
+import { stateDir, logFile, serveControl, status, type Status } from './lifecycle.js';
+import { controlEndpoint } from './control-endpoint.js';
+import { EXIT_ALREADY_RUNNING, EXIT_DISPLACED } from './exit-codes.js';
 import WebSocket from 'ws';
 import { Assembly, buildFrames, gunzipJson, parseFrame, type Assembled } from './relay-protocol.js';
 import { agentSocketUrl, loadRelaySettings, mcpUrl, probeRelay, rebindRelay, type RelayCapabilities, type RelaySettings } from './relay-settings.js';
@@ -30,11 +32,31 @@ function log(message: string) {
 
 const configPath = resolve(process.env.LOCALMCP_CONFIG || resolve(stateDir, 'localmcp.json'));
 await mkdir(stateDir, { recursive: true, mode: 0o700 });
-const closeControl = await serveControl(
-  (): Status => ({ status: 'running', pid: process.pid, url: mcpEndpoint, config: configPath, log: logFile, ready }),
-  () => { void stop(0); },
-  () => reloading ??= reloadLocal().finally(() => { reloading = undefined; }),
-);
+const closeControl = await claimControl();
+
+/** Serve the control endpoint, which also makes this the only agent for stateDir. */
+async function claimControl() {
+  const serve = () => serveControl(
+    (): Status => ({ status: 'running', pid: process.pid, url: mcpEndpoint, config: configPath, log: logFile, ready }),
+    () => { void stop(0); },
+    () => reloading ??= reloadLocal().finally(() => { reloading = undefined; }),
+  );
+  try { return await serve(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+    const { socketFile } = controlEndpoint(stateDir);
+    const current = await status().catch(() => undefined);
+    // A Windows pipe name is only taken while its server is alive. On Unix, only a
+    // socket file that refuses connections is treated as left over.
+    if (current?.status !== 'stopped' || !socketFile) {
+      log(`Another LocalMCP agent${current?.pid ? ` (PID ${current.pid})` : ''} already serves ${stateDir}. This process is exiting.`);
+      process.exit(EXIT_ALREADY_RUNNING);
+    }
+    // A killed process left its Unix socket file behind and nothing listens on it.
+    await rm(socketFile, { force: true });
+    return serve();
+  }
+}
 await writeFile(pidFile, String(process.pid), { mode: 0o600 });
 
 process.once('SIGINT', () => { void stop(0); });
@@ -73,6 +95,8 @@ function connect() {
   if (closing || !settings || !runtime) return;
   clearTimeout(reconnect);
   const current = ++generation;
+  // A timer and a rebind can both reconnect; never keep two sockets for one device.
+  if (socket && socket.readyState !== WebSocket.CLOSED) socket.terminate();
   const wsUrl = agentSocketUrl(settings.workerUrl, settings.deviceId);
   const headers: Record<string, string> = { Authorization: `Bearer ${settings.agentToken}`, 'x-localmcp-takeover': '1' };
   if (caps.protocol >= 2) {
@@ -99,13 +123,24 @@ function connect() {
   });
   ws.on('unexpected-response', (_request, response) => {
     const chunks: Buffer[] = [];
-    response.on('data', (chunk: Buffer) => chunks.push(chunk));
-    response.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf8');
+    let size = 0;
+    let handled = false;
+    const finish = () => {
+      if (handled) return;
+      handled = true;
+      clearTimeout(bodyTimer);
+      const body = Buffer.concat(chunks).toString('utf8').slice(0, 500);
       log(`Relay rejected the connection (${response.statusCode}): ${body || response.statusMessage}`);
       if (response.statusCode === 404 && !rebound) void rebindAndReconnect();
       else if (response.statusCode === 409) log('The relay kept the existing session. This process will retry with takeover; stop the other localmcp if it is still running. 中继上仍有会话，将继续尝试接管。');
-    });
+      // With this listener attached, ws leaves the handshake pending instead of aborting it.
+      // Terminate so 'close' fires and the backoff below schedules the next attempt.
+      ws.terminate();
+    };
+    const bodyTimer = setTimeout(finish, 5000);
+    response.on('data', (chunk: Buffer) => { if (size < 4096) { chunks.push(chunk); size += chunk.length; } });
+    response.on('end', finish);
+    response.on('error', finish);
   });
   ws.on('message', data => { void onMessage(ws, data.toString(), () => { pong = Date.now(); }, state => { assembly = state.assembly; requestId = state.requestId; }, () => ({ assembly, requestId })); });
   ws.on('error', error => log(`Worker connection error: ${error.message}`));
@@ -115,7 +150,7 @@ function connect() {
     if (closing || current !== generation) return;
     if (code === 4000) {
       log('Another authenticated agent reclaimed this device. This process is exiting so it does not steal the session back. 另一个已认证的 Agent 接管了会话，本进程退出。');
-      void stop(1);
+      void stop(EXIT_DISPLACED);
       return;
     }
     const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5)) + Math.random() * 1000;
