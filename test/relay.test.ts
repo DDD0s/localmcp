@@ -57,6 +57,33 @@ test('Worker + Durable Object + local agent: authenticated MCP, chunking and rec
   assert.equal(firstClose,4000);
   takeover.close();
   await new Promise(r=>setTimeout(r,100));
+  // After a reboot or network loss the old peer is stale: it never acknowledges the
+  // close frame. Calls must still reach the agent that took over.
+  const agentUrl=origin.replace('http:','ws:')+`/agent/${registered.deviceId}`;
+  const opened=(socket:WebSocket)=>new Promise<void>((resolve,reject)=>{socket.once('open',()=>resolve());socket.once('error',reject);});
+  const stale=new WebSocket(agentUrl,{headers:{Authorization:`Bearer ${registered.agentToken}`,'x-localmcp-takeover':'1'}});
+  await opened(stale);
+  stale.pause();
+  const fresh=new WebSocket(agentUrl,{headers:{Authorization:`Bearer ${registered.agentToken}`,'x-localmcp-takeover':'1'}});
+  await opened(fresh);
+  let freshAssembly:Assembly|undefined;
+  fresh.on('message',raw=>{
+    const message=raw.toString();
+    if(message==='pong')return;
+    const frame=parseFrame(message);
+    freshAssembly??=new Assembly();
+    const complete=freshAssembly.push(frame) as {value:{body:string}}|undefined;
+    if(!complete)return;
+    freshAssembly=undefined;
+    const request=JSON.parse(complete.value.body);
+    for(const out of frames(frame.id,{status:200,body:JSON.stringify({jsonrpc:'2.0',id:request.id,result:{from:'fresh'}})}))fresh.send(out);
+  });
+  const routed=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:7,method:'ping'})});
+  assert.equal(routed.status,200,await routed.clone().text());
+  assert.deepEqual((await routed.json()).result,{from:'fresh'});
+  stale.terminate();
+  fresh.close();
+  await new Promise(r=>setTimeout(r,100));
   assert.equal((await fetch(`${origin}/mcp/${registered.deviceId}/${mcpToken}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,404);
   await mkdir(join(root,'.localmcp'));
   await writeFile(join(root,'.localmcp/worker.json'),JSON.stringify({workerUrl:origin,agentToken:registered.agentToken,mcpToken:registered.mcpToken,deviceId:registered.deviceId}));

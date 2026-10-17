@@ -130,7 +130,7 @@ export class McpRelay {
       const expected = await this.ctx.storage.get<string>('mcpHash');
       if (!await authorized(request.headers.get('x-localmcp-mcp-token') || '', expected)) return new Response(null, { status: 404 });
     }
-    const socket = this.ctx.getWebSockets('agent')[0];
+    const socket = this.liveSockets().at(-1);
     if (!socket) return json({ error: 'Local agent offline. Start localmcp.' }, 503);
     if (this.pending.size) return json({ error: 'Local agent busy. Do not automatically retry write operations.' }, 429);
     const caps = socketCaps(socket);
@@ -164,12 +164,15 @@ export class McpRelay {
       const expected = await this.ctx.storage.get<string>('agentHash');
       if (!await authorized(request.headers.get('x-localmcp-agent-token') || '', expected)) return new Response(null, { status: 404 });
     }
-    const existing = this.ctx.getWebSockets('agent');
+    const existing = this.liveSockets();
     const takeover = request.headers.get('x-localmcp-takeover') === '1';
     if (existing.length && !takeover) return json(busyBody, 409);
     if (existing.length && takeover) {
       for (const socket of existing) {
         this.failSocket(socket);
+        // Mark the socket retired first: a stale peer never acknowledges the close,
+        // so it would otherwise stay in getWebSockets() and keep receiving requests.
+        try { socket.serializeAttachment({ ...((socket.deserializeAttachment() as object | null) ?? {}), retired: true }); } catch { /* already closed */ }
         try { socket.close(4000, 'Reclaimed by authenticated agent'); } catch { /* already closed */ }
       }
     }
@@ -177,6 +180,10 @@ export class McpRelay {
     this.ctx.acceptWebSocket(pair[1], ['agent']);
     pair[1].serializeAttachment(socketCapsFrom(request));
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  private liveSockets(): WebSocket[] {
+    return this.ctx.getWebSockets('agent').filter(socket => !(socket.deserializeAttachment() as { retired?: boolean } | null)?.retired);
   }
 
   private finish(id: string, response: Response) {
