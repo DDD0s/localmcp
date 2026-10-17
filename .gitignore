@@ -7,3 +7,4 @@ dist/
 localmcp.json
 .wrangler/
 .dev.vars*
+.register-token

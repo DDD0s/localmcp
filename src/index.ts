@@ -29,6 +29,7 @@ async function main() {
   if (mode === 'init') { await ensureInitialized(true); return; }
   if (mode === 'update') { await updateCommand(); return; }
   if (mode === 'relay') { await relayCommand(); return; }
+  if (mode === 'register-token') { await registerTokenCommand(); return; }
   if (mode === 'autostart') { await autostartCommand(); return; }
   if (mode === 'health') { await healthCommand(); return; }
   if (['start', 'stop', 'reload', 'status'].includes(mode)) {
@@ -42,7 +43,7 @@ async function main() {
   }
   if (mode === 'agent') { await ensureInitialized(); await import('./agent.js'); return; }
   const cfg = await config();
-  if (!['stdio', 'http'].includes(mode)) throw new Error('Usage: localmcp [start|status|stop|reload|health|init|update|relay|autostart|agent|stdio|http|version]');
+  if (!['stdio', 'http'].includes(mode)) throw new Error('Usage: localmcp [start|status|stop|reload|health|init|update|relay|register-token|autostart|agent|stdio|http|version]');
   if (mode === 'http' && (!cfg.token || cfg.token.length < 32)) throw new Error('HTTP requires LOCALMCP_TOKEN with at least 32 characters');
   const runtime = await startLocalRuntime();
   const shutdown: Array<() => Promise<unknown>> = [() => runtime.close()];
@@ -148,6 +149,23 @@ async function autostartCommand() {
     return;
   }
   console.log(await autostart(action as 'install' | 'remove' | 'status', { nodePath, agentPath, cliPath }));
+}
+
+
+async function registerTokenCommand() {
+  const { homedir } = await import('node:os');
+  const { resolve } = await import('node:path');
+  const { setRegisterToken } = await import('./relay-settings.js');
+  const stateDir = resolve(homedir(), '.localmcp');
+  const arg = process.argv[3];
+  if (!arg) throw new Error('Usage: localmcp register-token <secret>|--clear\nStores the Worker REGISTER_TOKEN for /register (also accepts LOCALMCP_REGISTER_TOKEN).');
+  if (arg === '--clear') {
+    await setRegisterToken(stateDir, null);
+    console.log('Cleared saved register token.');
+    return;
+  }
+  await setRegisterToken(stateDir, arg);
+  console.log('Saved register token for self-hosted /register. Restart is not required until the next register/rebind.');
 }
 
 async function updateCommand() {

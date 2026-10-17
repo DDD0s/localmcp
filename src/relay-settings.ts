@@ -56,13 +56,14 @@ export async function loadRelaySettings(stateDir: string, env: NodeJS.ProcessEnv
   const requestedPublic = env.LOCALMCP_PUBLIC_URL || saved?.publicBaseUrl || identity?.publicBaseUrl;
   const publicBaseUrl = requestedPublic ? resolvePublicBase(workerUrl, requestedPublic) : undefined;
   const urlChanged = Boolean(saved?.workerUrl) && validateOrigin(saved.workerUrl) !== workerUrl;
+  const registerToken = (env.LOCALMCP_REGISTER_TOKEN || saved?.registerToken || identity?.registerToken || '').trim() || undefined;
 
   let next: RelaySettings;
   if (!creds) {
-    const registered = await register(workerUrl, undefined, fetchImpl);
+    const registered = await register(workerUrl, undefined, fetchImpl, registerToken);
     next = { ...registered, workerUrl, publicBaseUrl: publicBaseUrl || differentPublic(workerUrl, registered.publicBaseUrl) };
   } else if (urlChanged && creds.deviceId) {
-    const registered = await register(workerUrl, creds, fetchImpl);
+    const registered = await register(workerUrl, creds, fetchImpl, registerToken);
     if (registered.deviceId !== creds.deviceId || registered.agentToken !== creds.agentToken || registered.mcpToken !== creds.mcpToken) {
       throw new Error('This relay issued new credentials instead of keeping the current MCP URL. Deploy the enhanced self-hosted relay for stable rebind. Saved credentials were left unchanged.');
     }
@@ -97,7 +98,8 @@ export async function rebindRelay(stateDir: string, fetchImpl: typeof fetch = fe
   const creds = saved ? credentials(saved, 'worker.json') : undefined;
   if (!creds?.deviceId || !saved?.workerUrl) throw new Error('No saved device identity to rebind. Run localmcp once to register.');
   const workerUrl = validateOrigin(saved.workerUrl);
-  const registered = await register(workerUrl, creds, fetchImpl);
+  const registerToken = (process.env.LOCALMCP_REGISTER_TOKEN || saved.registerToken || '').trim() || undefined;
+  const registered = await register(workerUrl, creds, fetchImpl, registerToken);
   if (registered.deviceId !== creds.deviceId || registered.agentToken !== creds.agentToken || registered.mcpToken !== creds.mcpToken) {
     throw new Error('This relay issued new credentials instead of keeping the current MCP URL. Saved credentials were left unchanged.');
   }
@@ -108,18 +110,25 @@ export async function rebindRelay(stateDir: string, fetchImpl: typeof fetch = fe
 
 export async function persistRelaySettings(stateDir: string, settings: RelaySettings): Promise<void> {
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
-  const body = JSON.stringify(settings, null, 2);
+  const previous = await readJson(resolve(stateDir, 'worker.json')) || {};
+  const registerToken = (process.env.LOCALMCP_REGISTER_TOKEN || previous.registerToken || '').trim();
+  const payload: Record<string, unknown> = { ...settings };
+  if (registerToken) payload.registerToken = registerToken;
+  const body = JSON.stringify(payload, null, 2);
   await writeFile(resolve(stateDir, 'worker.json'), body, { mode: 0o600 });
   await writeFile(resolve(stateDir, 'identity.json'), body, { mode: 0o600 });
 }
 
-async function register(workerUrl: string, existing: Credentials | undefined, fetchImpl: typeof fetch): Promise<RelaySettings> {
+async function register(workerUrl: string, existing: Credentials | undefined, fetchImpl: typeof fetch, registerToken?: string): Promise<RelaySettings> {
   const body = JSON.stringify(existing ? { deviceId: existing.deviceId, agentToken: existing.agentToken, mcpToken: existing.mcpToken } : {});
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const token = (registerToken || process.env.LOCALMCP_REGISTER_TOKEN || '').trim();
+  if (token) headers['x-localmcp-register-token'] = token;
   let response: Response;
   try {
     response = await fetchImpl(new URL('/register', workerUrl), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body,
       signal: AbortSignal.timeout(15000),
     });
@@ -161,4 +170,16 @@ async function readJson(path: string): Promise<any | undefined> {
     if (error instanceof SyntaxError) throw new Error(`Invalid JSON in ${path}`);
     throw error;
   }
+}
+
+
+/** Save the self-hosted /register shared secret for later rebind/register calls. */
+export async function setRegisterToken(stateDir: string, token: string | null): Promise<void> {
+  const workerFile = resolve(stateDir, 'worker.json');
+  const saved = await readJson(workerFile) || {};
+  if (token === null || token === '') delete saved.registerToken;
+  else saved.registerToken = token.trim();
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  await writeFile(workerFile, JSON.stringify(saved, null, 2), { mode: 0o600 });
+  if (saved.agentToken) await writeFile(resolve(stateDir, 'identity.json'), JSON.stringify(saved, null, 2), { mode: 0o600 });
 }

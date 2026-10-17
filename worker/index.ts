@@ -1,7 +1,7 @@
 import { Assembly, buildFrames, gunzipJson, parseFrame, type Assembled } from '../src/relay-protocol';
 import { resolvePublicBase } from '../src/public-url';
 
-interface Env { RELAY: DurableObjectNamespace; MCP_TOKEN_HASH?: string; AGENT_TOKEN_HASH?: string; PUBLIC_BASE_URL?: string }
+interface Env { RELAY: DurableObjectNamespace; MCP_TOKEN_HASH?: string; AGENT_TOKEN_HASH?: string; PUBLIC_BASE_URL?: string; REGISTER_TOKEN?: string }
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 const sha256 = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, '0')).join('');
 async function authorized(token: string, expected?: string) {
@@ -9,6 +9,20 @@ async function authorized(token: string, expected?: string) {
   const hash = await sha256(token);
   let diff = 0;
   for (let i = 0; i < 64; i++) diff |= hash.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
+
+async function registerAuthorized(request: Request, env: Env) {
+  const expected = env.REGISTER_TOKEN;
+  if (!expected) return true; // unset keeps local/dev open; set the secret on self-hosted relays
+  const provided = request.headers.get('x-localmcp-register-token')
+    || request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '')
+    || '';
+  if (!provided || provided.length > 256 || expected.length > 256) return false;
+  const a = await sha256(provided);
+  const b = await sha256(expected);
+  let diff = 0;
+  for (let i = 0; i < 64; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
 function randomHex(bytes = 32) {
@@ -54,10 +68,13 @@ const DEVICE = /^[0-9a-f-]{36}$/;
 export default { async fetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/healthz' && request.method === 'GET') {
-    return json({ ok: true, service: 'localmcp-relay', registration: true, stableRegistration: true, protocol: 2, chunkSize: 120000, compress: true, publicBaseUrl: publicBase(request, env), edition: 'enhanced' });
+    return json({ ok: true, service: 'localmcp-relay', registration: true, stableRegistration: true, registrationAuth: Boolean(env.REGISTER_TOKEN), protocol: 2, chunkSize: 120000, compress: true, publicBaseUrl: publicBase(request, env), edition: 'enhanced' });
   }
   if (request.headers.has('Origin')) return json({ error: 'Origin not allowed' }, 403);
   if (url.pathname === '/register' && request.method === 'POST') {
+    if (!await registerAuthorized(request, env)) {
+      return json({ error: 'Registration requires x-localmcp-register-token (or Authorization: Bearer <REGISTER_TOKEN>)', code: 'register_unauthorized', hint: 'Set LOCALMCP_REGISTER_TOKEN on the agent to match the Worker REGISTER_TOKEN secret.' }, 401);
+    }
     let body: { deviceId?: unknown; agentToken?: unknown; mcpToken?: unknown } = {};
     try { body = JSON.parse(await bodyText(request, 4096) || '{}'); }
     catch { return json({ error: 'Invalid JSON' }, 400); }

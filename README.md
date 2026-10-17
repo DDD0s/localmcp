@@ -186,6 +186,19 @@ curl https://localmcp-relay.<你的子域>.workers.dev/healthz
 ```sh
 localmcp stop
 localmcp relay https://localmcp-relay.<你的子域>.workers.dev
+
+Protect `/register` on your Worker with a Cloudflare secret named `REGISTER_TOKEN`, then on each agent machine:
+
+```bash
+# Worker secret (once per deployment)
+npx wrangler secret put REGISTER_TOKEN --config wrangler.jsonc
+# Agent side (same value)
+localmcp register-token '<same-secret>'
+# or: export LOCALMCP_REGISTER_TOKEN='<same-secret>'
+```
+
+Without the matching header `x-localmcp-register-token`, `POST /register` returns 401. Existing agent reconnect and ChatGPT MCP calls are unchanged.
+
 # 若配置了自定义域名：
 localmcp relay https://localmcp-relay.<你的子域>.workers.dev --public https://mcp.example.com
 localmcp
