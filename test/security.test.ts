@@ -50,8 +50,11 @@ test('archive extraction strips a GitHub root and rejects escapes', async () => 
     ])), dest);
     assert.equal(await readFile(join(dest, 'package.json'), 'utf8'), '{"name":"ok"}');
     assert.equal(await readFile(join(dest, 'src/app.txt'), 'utf8'), 'hello');
-    const mode = (await stat(join(dest, 'package.json'))).mode & 0o777;
-    assert.equal(mode, 0o644);
+    // Windows does not store Unix permission bits and reports 0o666. Traversal checks below still run.
+    if (process.platform !== 'win32') {
+      const mode = (await stat(join(dest, 'package.json'))).mode & 0o777;
+      assert.equal(mode, 0o644);
+    }
   } finally { await rm(dest, { recursive: true, force: true }); }
 
   const paxDest = await mkdtemp(join(tmpdir(), 'localmcp-pax-'));
