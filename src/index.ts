@@ -7,6 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { config } from './config.js';
 import { startLocalRuntime } from './runtime.js';
 import { packageName, version } from './version.js';
+import { redactMcpUrl } from './redact.js';
+
+let revealUrl = false;
 
 async function ensureInitialized(force = false) {
   const { copyFile, access, cp, mkdir } = await import('node:fs/promises');
@@ -24,6 +27,8 @@ async function ensureInitialized(force = false) {
 }
 
 async function main() {
+  revealUrl = process.argv.includes('--show-url');
+  for (let index = process.argv.length - 1; index >= 0; index--) if (process.argv[index] === '--show-url') process.argv.splice(index, 1);
   const mode = process.argv[2] || 'start';
   if (mode === '--version' || mode === '-v' || mode === 'version') { console.log(`${packageName} ${version}`); return; }
   if (mode === 'init') { await ensureInitialized(true); return; }
@@ -36,14 +41,14 @@ async function main() {
     const { control, status, printStatus } = await import('./lifecycle.js');
     if (mode === 'status') {
       const value = await status();
-      printStatus(value);
+      printStatus(value, { showUrl: revealUrl });
       process.exitCode = value.status === 'running' && value.ready ? 0 : 1;
-    } else await control(mode as 'start' | 'stop' | 'reload', ensureInitialized);
+    } else await control(mode as 'start' | 'stop' | 'reload', ensureInitialized, { showUrl: revealUrl });
     return;
   }
   if (mode === 'agent') { await ensureInitialized(); await import('./agent.js'); return; }
   const cfg = await config();
-  if (!['stdio', 'http'].includes(mode)) throw new Error('Usage: localmcp [start|status|stop|reload|health|init|update|relay|register-token|autostart|agent|stdio|http|version]');
+  if (!['stdio', 'http'].includes(mode)) throw new Error('Usage: localmcp [start|status|stop|reload|health|init|update|relay|register-token|autostart|agent|stdio|http|version] [--show-url]');
   if (mode === 'http' && (!cfg.token || cfg.token.length < 32)) throw new Error('HTTP requires LOCALMCP_TOKEN with at least 32 characters');
   const runtime = await startLocalRuntime();
   const shutdown: Array<() => Promise<unknown>> = [() => runtime.close()];
@@ -87,7 +92,7 @@ async function healthCommand() {
   const { installProxyDispatcher } = await import('./proxy.js');
   const proxy = installProxyDispatcher();
   const { healthReport } = await import('./lifecycle.js');
-  const report = await healthReport();
+  const report = await healthReport({ showUrl: revealUrl });
   if (proxy) console.log(`proxy: ${proxy}`);
   console.log(report.lines.join('\n'));
   process.exitCode = report.code;
@@ -105,7 +110,7 @@ async function relayCommand() {
       const saved = JSON.parse(await readFile(resolve(stateDir, 'worker.json'), 'utf8'));
       console.log(`Relay: ${saved.workerUrl || DEFAULT_PUBLIC_WORKER_URL}`);
       if (saved.publicBaseUrl) console.log(`Public URL: ${saved.publicBaseUrl}`);
-      if (saved.mcpToken) console.log(`MCP URL: ${mcpUrl(saved)}`);
+      if (saved.mcpToken) console.log(`MCP URL: ${revealUrl ? mcpUrl(saved) : redactMcpUrl(mcpUrl(saved))}${revealUrl ? '' : '\nFull URL: localmcp relay --show-url'}`);
       else console.log('MCP URL: not registered yet');
     } catch (error: any) {
       if (error.code !== 'ENOENT') throw error;
@@ -126,7 +131,7 @@ async function relayCommand() {
   const saved = await configureRelay(stateDir, { workerUrl, publicBaseUrl: clearPublic ? null : publicBaseUrl });
   console.log(`Relay saved: ${saved.workerUrl}`);
   if ('publicBaseUrl' in saved && saved.publicBaseUrl) console.log(`Public URL: ${saved.publicBaseUrl}`);
-  if ('mcpToken' in saved && saved.mcpToken) console.log(`MCP URL: ${mcpUrl(saved as any)}`);
+  if ('mcpToken' in saved && saved.mcpToken) console.log(`MCP URL: ${revealUrl ? mcpUrl(saved as any) : redactMcpUrl(mcpUrl(saved as any))}${revealUrl ? '' : '\nFull URL: localmcp status --show-url'}`);
   console.log('Restart localmcp so the change applies. 中继地址已保存，请重新启动 localmcp。已有 deviceId 会原样重绑，ChatGPT 里的路径保持不变。');
 }
 
@@ -170,9 +175,9 @@ async function registerTokenCommand() {
 
 async function updateCommand() {
   const { updateFromGitHub } = await import('./update.js');
-  const ref = process.argv[3] || 'main';
+  const ref = process.argv[3];
   const installed = await updateFromGitHub({ ref, expectedName: packageName });
-  console.log(`Installed ${installed.name} ${installed.version}. A running agent keeps the old code until: localmcp stop && localmcp`);
+  console.log(`Installed ${installed.name} ${installed.version} from ${installed.tag} (${installed.commit}). A running agent keeps the old code until: localmcp stop && localmcp`);
 }
 
 main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); });

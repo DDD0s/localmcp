@@ -32,11 +32,11 @@ git clone --depth 1 https://github.com/DDD0s/localmcp.git
 cd localmcp
 npm ci --ignore-scripts
 npm pack
-npm install -g ./ddd0s-localmcp-0.4.0.tgz
+npm install -g ./ddd0s-localmcp-0.4.1.tgz
 localmcp
 ```
 
-> `npm install -g github:DDD0s/localmcp` does not work with npm 11: it exits 0 but builds no `dist/` and creates no `localmcp` command. Build the tarball as above (`npm pack` prints its file name), or install a release tarball once one is published. After the first install, `localmcp update` repeats these steps.
+> `npm install -g github:DDD0s/localmcp` does not work with npm 11: it exits 0 but builds no `dist/` and creates no `localmcp` command. Build the tarball as above (`npm pack` prints its file name), or install a release tarball once one is published. After a GitHub Release with a `SHA256SUMS` asset exists, `localmcp update` repeats an install from that release. It does not clone `main`.
 
 Windows PowerShell 同样使用上面的 npm 命令。升级后会多写一份 `~/.localmcp/identity.json`，用来在 `worker.json` 丢失时恢复同一条 URL。
 
@@ -46,13 +46,27 @@ Windows PowerShell 同样使用上面的 npm 命令。升级后会多写一份 `
 npm install -g @ddd0s/localmcp
 ```
 
-自己更新：
+自己更新（需要已经发布、并带有 `SHA256SUMS` 的 GitHub Release）：
 
 ```sh
 localmcp update
+localmcp update v0.4.1
+localmcp update <40-hex-commit>
 ```
 
-It clones `DDD0s/localmcp` into a temporary directory, builds a tarball with `npm pack` and installs it with `npm install -g`. Pick a version with `localmcp update <branch-or-tag>`; a checkout that is not `@ddd0s/localmcp` (for example the upstream package) is refused. A running agent keeps the old code until `localmcp stop` and `localmcp`.
+`localmcp update` installs the latest GitHub Release of this repository. It downloads `https://github.com/DDD0s/localmcp/archive/refs/tags/<tag>.tar.gz`, checks that file's SHA-256 and the tag's commit against the release asset `SHA256SUMS`, and only then runs `npm ci --ignore-scripts`, `npm pack`, and `npm install -g`. `localmcp update v0.4.1` pins that tag. `localmcp update <40-hex-commit>` installs the release whose tag points at that commit. Branch names such as `main` are refused. A tree whose `package.json` name is not `@ddd0s/localmcp` is refused. A running agent keeps the old code until `localmcp stop` and `localmcp`.
+
+Until a release with `SHA256SUMS` is published, `localmcp update` exits with an error instead of installing unverified source. Maintainers: after the GitHub Release exists (this repository does not tag or publish it for you), attach the checksum of that exact archive URL:
+
+```sh
+TAG=v0.4.1
+curl -fsSL -L -o source.tar.gz "https://github.com/DDD0s/localmcp/archive/refs/tags/${TAG}.tar.gz"
+COMMIT=$(git rev-parse "refs/tags/${TAG}^{}")
+node -e "const fs=require('fs');const c=require('crypto');const b=fs.readFileSync('source.tar.gz');console.log(c.createHash('sha256').update(b).digest('hex')+'  source.tar.gz');console.log('commit '+process.argv[1]);" "$COMMIT" > SHA256SUMS
+gh release upload "$TAG" SHA256SUMS
+```
+
+The `commit` line is the commit the tag points at (`^{}` peels an annotated tag). `localmcp update` refuses the release if either line does not match.
 
 ## 快速开始
 
@@ -70,11 +84,11 @@ git clone --depth 1 https://github.com/DDD0s/localmcp.git
 cd localmcp
 npm ci --ignore-scripts
 npm pack
-npm install -g ./ddd0s-localmcp-0.4.0.tgz
+npm install -g ./ddd0s-localmcp-0.4.1.tgz
 localmcp
 ```
 
-看到 `Status: running` 后，复制 `MCP URL:` 后的**完整地址**。可随时运行 `localmcp status` 再次查看。
+看到 `Status: running` 后，运行 `localmcp status --show-url`，复制 `MCP URL:` 后的**完整地址**。也可以在启动时加 `--show-url`（`localmcp --show-url`）。普通的 `localmcp`、`localmcp status` 和 `~/.localmcp/agent.log` 会把密钥显示成 `<redacted>`。
 
 > MCP URL 包含访问凭证，请勿公开。服务在后台运行，使用时保持电脑开机、联网即可。
 
@@ -122,12 +136,13 @@ localmcp
 | 命令 | 用途 | 退出码 |
 | --- | --- | --- |
 | `localmcp` | 启动后台服务，已运行时复用已有进程 | 启动失败为非 0 |
-| `localmcp status` | 查看状态、MCP URL 和日志路径 | 运行且就绪为 0，否则 1 |
-| `localmcp health` | 检查本机进程，并请求中继 `/healthz` | 0 健康，1 未运行或中继不可达，2 本地错误 |
+| `localmcp status` | 查看状态和日志路径。MCP URL 默认隐去密钥 | 运行且就绪为 0，否则 1 |
+| `localmcp status --show-url` | 打印完整 MCP URL，供复制到 ChatGPT | 同 `status` |
+| `localmcp health` | 检查本机进程，并请求中继 `/healthz`。URL 默认隐去密钥；`localmcp health --show-url` 显示完整地址 | 0 健康，1 未运行或中继不可达，2 本地错误 |
 | `localmcp stop` | 停止后台服务 | |
 | `localmcp reload` | 校验并重新加载配置 | |
 | `localmcp agent` | 前台运行，便于调试 | |
-| `localmcp update [ref]` | 从 GitHub 安装当前增强版 | |
+| `localmcp update [tag or commit]` | 安装已校验的 GitHub Release，不拉取 `main` | |
 | `localmcp relay` | 查看或保存自建中继地址 | |
 | `localmcp autostart install` | 安装用户级自启 | |
 | `localmcp version` | 打印 `@ddd0s/localmcp` 与版本号 | |
@@ -166,7 +181,23 @@ npm run worker:deploy
 curl https://localmcp-relay.<你的子域>.workers.dev/healthz
 ```
 
-返回里应包含 `"ok":true`、`"service":"localmcp-relay"`、`"registration":true`，以及 `"protocol":2`。`protocol: 2` 表示这是增强版中继（稳定重绑、会话接管、大分片和 gzip）。
+返回里应包含 `"ok":true`、`"service":"localmcp-relay"`、`"registration":true`、`"protocol":2`，以及 `"rateLimit":true`。`protocol: 2` 表示这是增强版中继（稳定重绑、会话接管、大分片和 gzip）。
+
+### 速率限制
+
+`wrangler.jsonc` 里的 `ratelimits` 会在 `npm run worker:deploy` 时生效，不需要另外开通产品。三条绑定：
+
+| 绑定 | 路径 | 默认 |
+| --- | --- | --- |
+| `REGISTER_RATE_LIMITER` | `POST /register` | 每个连接 IP 每 60 秒 20 次 |
+| `MCP_RATE_LIMITER` | `POST /mcp` | 每个 device id 每 10 秒 200 次 |
+| `MCP_IP_RATE_LIMITER` | `POST /mcp` | 每个连接 IP 每 10 秒 200 次 |
+
+ChatGPT 正常对话远低于这个速率（一次工具调用是一次 POST，并行调用通常只有几次）。多个 ChatGPT 连接器可能共用 OpenAI 的出口 IP，因此「每 IP」额度是共享的，并且按 Cloudflare 位置分别计算；单个连接器还有自己的 device 额度。`/healthz` 和 Agent 的 WebSocket（`/agent`）不计数，重连不受影响。超过限制时返回 HTTP 429，正文为 `{ "error", "code": "rate_limited", "retryAfter" }`，并带 `Retry-After`。`POST /register` 在创建 Durable Object 之前计数，`POST /mcp` 在读取正文之前计数。已有 MCP URL 和 protocol 2 的注册响应不变。
+
+计数键是 Cloudflare 写入的 `CF-Connecting-IP`，以及 `/mcp` 路径里的 device id。限额按 Cloudflare 位置分别计算，并且是近似值（见 [Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)）。`namespace_id`（`18421001`、`18421002`、`18421003`）必须在账号内唯一；部署报冲突时改掉这三个值，并保持与 `worker/rate-limit.ts` 里的数字一致。没有绑定时代码仍会在当前 isolate 上套用同样的数字，跨地点的限制要靠上面的绑定。
+
+本次变更没有部署 Worker。合并后在仓库根目录执行 `npm run worker:deploy` 才会让线上中继开始限流。已有 Durable Object 数据不需要迁移。
 
 ### 第二步：可选自定义域名
 
@@ -380,7 +411,7 @@ node dist/index.js version
 2. `npm login`
 3. `npm publish --access public`
 
-After publishing, the install command becomes `npm install -g @ddd0s/localmcp`. Until then, build the tarball as in the install section, or attach it to a GitHub release and install from its URL.
+After publishing, the install command becomes `npm install -g @ddd0s/localmcp`. Until then, build the tarball as in the install section, or attach it to a GitHub release and install from its URL. `localmcp update` only works after that release also has the `SHA256SUMS` asset described above. Do not point `localmcp update` at `main`.
 
 ## License
 

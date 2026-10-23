@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { resolvePublicBase } from './public-url.js';
+import { redactSecrets } from './redact.js';
 
 export const DEFAULT_PUBLIC_WORKER_URL = 'https://localmcp-relay.daodao973597.workers.dev';
 const TOKEN = /^[a-f0-9]{64}$/;
@@ -139,8 +140,8 @@ async function register(workerUrl: string, existing: Credentials | undefined, fe
   const text = await response.text();
   let data: Partial<RelaySettings> & { error?: string; hint?: string; publicBaseUrl?: string } = {};
   try { data = text ? JSON.parse(text) : {}; } catch { /* keep the status error below */ }
-  if (response.status === 409) throw new Error(data.hint || data.error || 'Relay refused to rebind this device (409)');
-  if (!response.ok) throw new Error(`Relay registration failed (${response.status}). ${data.error || text.slice(0, 180) || 'Set LOCALMCP_WORKER_URL to a self-hosted relay if the public relay is unavailable.'}`);
+  if (response.status === 409) throw new Error(redactSecrets(data.hint || data.error || 'Relay refused to rebind this device (409)'));
+  if (!response.ok) throw new Error(`Relay registration failed (${response.status}). ${redactSecrets(data.error || text).slice(0, 180) || 'Set LOCALMCP_WORKER_URL to a self-hosted relay if the public relay is unavailable.'}`);
   const creds = credentials(data, 'relay registration response');
   if (!creds) throw new Error('Relay registration response did not include credentials');
   return { ...creds, workerUrl, publicBaseUrl: data.publicBaseUrl };
