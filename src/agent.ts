@@ -9,6 +9,7 @@ import { Assembly, buildFrames, gunzipJson, parseFrame, type Assembled } from '.
 import { agentSocketUrl, loadRelaySettings, mcpUrl, probeRelay, rebindRelay, type RelayCapabilities, type RelaySettings } from './relay-settings.js';
 import { createWebSocketProxyAgent, installProxyDispatcher } from './proxy.js';
 import { startLocalRuntime, type LocalRuntime } from './runtime.js';
+import { redactMcpUrl, redactSecrets } from './redact.js';
 
 const pidFile = resolve(stateDir, 'agent.pid');
 let closing = false;
@@ -27,7 +28,7 @@ let rebound = false;
 let generation = 0;
 
 function log(message: string) {
-  console.error(`${new Date().toISOString()} ${message}`);
+  console.error(`${new Date().toISOString()} ${redactSecrets(message)}`);
 }
 
 const configPath = resolve(process.env.LOCALMCP_CONFIG || resolve(stateDir, 'localmcp.json'));
@@ -118,7 +119,7 @@ function connect() {
     attempt = 0;
     if (!bannerPrinted) {
       bannerPrinted = true;
-      console.log(`LocalMCP is running\n\nMCP URL:\n${mcpEndpoint}\n\nAuthentication: None\nConfig: ${configPath}\n\nUse localmcp stop to stop. 使用 localmcp stop 停止。`);
+      console.log(`LocalMCP is running\n\nMCP URL:\n${redactMcpUrl(mcpEndpoint)}\n\nFull URL: localmcp status --show-url\nAuthentication: None\nConfig: ${configPath}\n\nUse localmcp stop to stop. 使用 localmcp stop 停止。`);
     } else log('Relay session restored. 中继已重新连接。');
   });
   ws.on('unexpected-response', (_request, response) => {

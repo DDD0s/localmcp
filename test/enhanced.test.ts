@@ -7,7 +7,7 @@ import { builtinModules } from 'node:module';
 import { createServer as createHttpServer } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { Assembly, CHUNK_SIZE, buildFrames, frames, gunzipJson, parseFrame } from '../src/relay-protocol.js';
@@ -179,7 +179,7 @@ test('health and status exit codes when nothing is running', async t => {
   assert.match(health.stdout, /unhealthy/);
   const version = await run('version');
   assert.equal(version.code, 0);
-  assert.match(version.stdout, /@ddd0s\/localmcp 0\.4\.0/);
+  assert.match(version.stdout, /@ddd0s\/localmcp 0\.4\.1/);
 });
 
 test('global fetch proxy is installed without capturing loopback', async t => {
@@ -350,26 +350,13 @@ test('autostart supervisor restarts crashed agents but not stopped, displaced or
   }
 });
 
-test('update builds a tarball from a clone and refuses a checkout of another package', async () => {
+test('update refuses branch names before downloading', async () => {
   const { updateFromGitHub } = await import('../src/update.js');
-  const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
-  const fakeRun = (name: string) => async (command: string, args: string[], cwd?: string) => {
-    calls.push({ command, args, cwd });
-    if (command === 'git') {
-      const target = args.at(-1)!;
-      await mkdir(target, { recursive: true });
-      await writeFile(join(target, 'package.json'), JSON.stringify({ name, version: '9.9.9' }));
-    }
-    if (args[0] === 'pack') await writeFile(join(args.at(-1)!, 'pkg-9.9.9.tgz'), '');
-  };
-  const installed = await updateFromGitHub({ ref: 'v9.9.9', expectedName: '@ddd0s/localmcp', run: fakeRun('@ddd0s/localmcp'), log: () => {} });
-  assert.deepEqual(installed, { name: '@ddd0s/localmcp', version: '9.9.9' });
-  assert.deepEqual(calls.map(call => [call.command, call.args[0]]), [['git', 'clone'], ['npm', 'ci'], ['npm', 'pack'], ['npm', 'install']]);
-  assert.ok(calls[0].args.includes('v9.9.9'));
-  assert.ok(calls[1].args.includes('--ignore-scripts'));
-  assert.match(calls[3].args.at(-1)!, /pkg-9\.9\.9\.tgz$/);
-  assert.equal(existsSync(dirname(calls[3].args.at(-1)!)), false, 'the temporary checkout is removed');
-  calls.length = 0;
-  await assert.rejects(updateFromGitHub({ ref: 'main', expectedName: '@ddd0s/localmcp', run: fakeRun('@daodao97/localmcp'), log: () => {} }), /contains @daodao97\/localmcp, not @ddd0s\/localmcp/);
-  assert.deepEqual(calls.map(call => call.command), ['git'], 'nothing is installed from an upstream checkout');
+  let fetched = false;
+  const fetchImpl: typeof fetch = async () => { fetched = true; throw new Error('network'); };
+  await assert.rejects(
+    updateFromGitHub({ ref: 'main', expectedName: '@ddd0s/localmcp', fetchImpl, run: async () => { throw new Error('ran'); }, log: () => {} }),
+    /Refusing to install main/,
+  );
+  assert.equal(fetched, false);
 });

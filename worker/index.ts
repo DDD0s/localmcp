@@ -1,7 +1,16 @@
 import { Assembly, buildFrames, gunzipJson, parseFrame, type Assembled } from '../src/relay-protocol';
 import { resolvePublicBase } from '../src/public-url';
+import { MCP_DEVICE_LIMIT, MCP_IP_LIMIT, REGISTER_LIMIT, allowRateLimit, bindingKey, clientKey, type RateLimiter, type WindowState } from './rate-limit';
 
-interface Env { RELAY: DurableObjectNamespace; MCP_TOKEN_HASH?: string; AGENT_TOKEN_HASH?: string; PUBLIC_BASE_URL?: string; REGISTER_TOKEN?: string }
+interface Env { RELAY: DurableObjectNamespace; MCP_TOKEN_HASH?: string; AGENT_TOKEN_HASH?: string; PUBLIC_BASE_URL?: string; REGISTER_TOKEN?: string; REGISTER_RATE_LIMITER?: RateLimiter; MCP_RATE_LIMITER?: RateLimiter; MCP_IP_RATE_LIMITER?: RateLimiter }
+const windows = new Map<string, WindowState>();
+const tooMany = (retryAfter: number) => Response.json({ error: 'Too many requests', code: 'rate_limited', retryAfter }, { status: 429, headers: { 'Cache-Control': 'no-store', 'Retry-After': String(retryAfter) } });
+async function mcpAllowed(env: Env, request: Request, device: string): Promise<boolean> {
+  const ip = clientKey(request.headers.get('CF-Connecting-IP'));
+  const deviceKey = bindingKey(device);
+  if (!await allowRateLimit(env.MCP_IP_RATE_LIMITER, windows, `mcp-ip:${ip}`, ip, MCP_IP_LIMIT)) return false;
+  return allowRateLimit(env.MCP_RATE_LIMITER, windows, `mcp-device:${deviceKey}`, deviceKey, MCP_DEVICE_LIMIT);
+}
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 const sha256 = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), byte => byte.toString(16).padStart(2, '0')).join('');
 async function authorized(token: string, expected?: string) {
@@ -68,10 +77,12 @@ const DEVICE = /^[0-9a-f-]{36}$/;
 export default { async fetch(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/healthz' && request.method === 'GET') {
-    return json({ ok: true, service: 'localmcp-relay', registration: true, stableRegistration: true, registrationAuth: Boolean(env.REGISTER_TOKEN), protocol: 2, chunkSize: 120000, compress: true, publicBaseUrl: publicBase(request, env), edition: 'enhanced' });
+    return json({ ok: true, service: 'localmcp-relay', registration: true, stableRegistration: true, registrationAuth: Boolean(env.REGISTER_TOKEN), protocol: 2, chunkSize: 120000, compress: true, publicBaseUrl: publicBase(request, env), edition: 'enhanced', rateLimit: true });
   }
   if (request.headers.has('Origin')) return json({ error: 'Origin not allowed' }, 403);
   if (url.pathname === '/register' && request.method === 'POST') {
+    const ip = clientKey(request.headers.get('CF-Connecting-IP'));
+    if (!await allowRateLimit(env.REGISTER_RATE_LIMITER, windows, `register:${ip}`, ip, REGISTER_LIMIT)) return tooMany(REGISTER_LIMIT.periodSeconds);
     if (!await registerAuthorized(request, env)) {
       return json({ error: 'Registration requires x-localmcp-register-token (or Authorization: Bearer <REGISTER_TOKEN>)', code: 'register_unauthorized', hint: 'Set LOCALMCP_REGISTER_TOKEN on the agent to match the Worker REGISTER_TOKEN secret.' }, 401);
     }
@@ -103,6 +114,7 @@ export default { async fetch(request: Request, env: Env): Promise<Response> {
   const mcpMatch = /^\/mcp\/([0-9a-f-]{36})\/([a-f0-9]{64})$/.exec(url.pathname);
   if (mcpMatch) {
     if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
+    if (!await mcpAllowed(env, request, mcpMatch[1])) return tooMany(MCP_DEVICE_LIMIT.periodSeconds);
     if (!request.headers.get('Content-Type')?.toLowerCase().includes('application/json')) return json({ error: 'JSON required' }, 415);
     let body: string;
     try { body = await bodyText(request, 2 * 1024 * 1024); JSON.parse(body); }
@@ -119,7 +131,9 @@ export default { async fetch(request: Request, env: Env): Promise<Response> {
     return relay(env, 'local').fetch(new Request('https://relay.internal/agent', { headers: agentHeaders(request, { 'x-localmcp-legacy': '1' }) }));
   }
   const legacy = /^\/mcp(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
-  if (!legacy || !await authorized(legacy[1] || bearer, env.MCP_TOKEN_HASH)) return new Response(null, { status: 404 });
+  if (!legacy) return new Response(null, { status: 404 });
+  if (request.method === 'POST' && !await mcpAllowed(env, request, 'legacy')) return tooMany(MCP_DEVICE_LIMIT.periodSeconds);
+  if (!await authorized(legacy[1] || bearer, env.MCP_TOKEN_HASH)) return new Response(null, { status: 404 });
   if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
   let legacyBody: string;
   try { legacyBody = await bodyText(request, 2 * 1024 * 1024); JSON.parse(legacyBody); }

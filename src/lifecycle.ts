@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { controlEndpoint } from './control-endpoint.js';
+import { redactMcpUrl } from './redact.js';
 
 export const stateDir = resolve(homedir(), '.localmcp');
 export const logFile = resolve(stateDir, 'agent.log');
@@ -34,11 +35,13 @@ export async function status(): Promise<Status> {
   }
 }
 
-export function printStatus(value: Status) {
-  console.log(`Status: ${value.status}\nPID: ${value.pid ?? '-'}\nMCP URL: ${value.url ?? '-'}\nConfig: ${value.config}\nLog: ${value.log}`);
+export function printStatus(value: Status, options?: { showUrl?: boolean }) {
+  const url = value.url ? (options?.showUrl ? value.url : redactMcpUrl(value.url)) : '-';
+  const hint = value.url && !options?.showUrl ? '\nFull URL: localmcp status --show-url' : '';
+  console.log(`Status: ${value.status}\nPID: ${value.pid ?? '-'}\nMCP URL: ${url}\nConfig: ${value.config}\nLog: ${value.log}${hint}`);
 }
 
-export async function healthReport(): Promise<{ code: number; lines: string[] }> {
+export async function healthReport(options?: { showUrl?: boolean }): Promise<{ code: number; lines: string[] }> {
   let current: Status;
   try { current = await status(); }
   catch (error) { return { code: 2, lines: ['unhealthy', error instanceof Error ? error.message : String(error)] }; }
@@ -49,7 +52,8 @@ export async function healthReport(): Promise<{ code: number; lines: string[] }>
     const response = await fetch(new URL('/healthz', settings.workerUrl), { signal: AbortSignal.timeout(8000) });
     if (!response.ok) return { code: 1, lines: ['unhealthy', `pid: ${current.pid}`, `relay: HTTP ${response.status}`] };
     const body = await response.json() as { protocol?: number };
-    return { code: 0, lines: ['healthy', `pid: ${current.pid}`, `url: ${current.url ?? '-'}`, `relay: ${settings.workerUrl}`, `protocol: ${body.protocol ?? 1}`] };
+    const url = current.url ? (options?.showUrl ? current.url : redactMcpUrl(current.url)) : '-';
+    return { code: 0, lines: ['healthy', `pid: ${current.pid}`, `url: ${url}`, `relay: ${settings.workerUrl}`, `protocol: ${body.protocol ?? 1}`] };
   } catch (error) {
     return { code: 1, lines: ['unhealthy', `pid: ${current.pid}`, `relay: ${error instanceof Error ? error.message : String(error)}`] };
   }
@@ -78,7 +82,7 @@ async function locked<T>(action: () => Promise<T>): Promise<T> {
   try {return await action();} finally {await rm(lockFile, {force: true});}
 }
 
-export async function control(command: 'start' | 'stop' | 'reload', initialize: () => Promise<void> = async () => {}) {
+export async function control(command: 'start' | 'stop' | 'reload', initialize: () => Promise<void> = async () => {}, options?: { showUrl?: boolean }) {
   return locked(async () => {
     let current = await status();
     if (command === 'reload') {
@@ -120,7 +124,7 @@ export async function control(command: 'start' | 'stop' | 'reload', initialize: 
         current = await status();
       }
     }
-    printStatus(current);
+    printStatus(current, options);
   });
 }
 

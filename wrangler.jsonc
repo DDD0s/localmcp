@@ -9,6 +9,15 @@
   // Uncomment both, replace the hostname, then `npm run worker:deploy`.
   // "vars": { "PUBLIC_BASE_URL": "https://mcp.example.com" },
   // "routes": [{ "pattern": "mcp.example.com", "custom_domain": true }],
+  // Applied by `npm run worker:deploy`. namespace_id must be unique in the Cloudflare account.
+  // Limits match worker/rate-limit.ts. They are per location and approximate:
+  // https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+  // POST /register: 20/minute per IP. POST /mcp: 200/10s per device and per IP.
+  "ratelimits": [
+    { "name": "REGISTER_RATE_LIMITER", "namespace_id": "18421001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "MCP_RATE_LIMITER", "namespace_id": "18421002", "simple": { "limit": 200, "period": 10 } },
+    { "name": "MCP_IP_RATE_LIMITER", "namespace_id": "18421003", "simple": { "limit": 200, "period": 10 } }
+  ],
   "durable_objects": { "bindings": [{ "name": "RELAY", "class_name": "McpRelay" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["McpRelay"] }]
 }

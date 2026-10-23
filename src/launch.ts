@@ -4,6 +4,7 @@ import { mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { redactMcpUrl } from './redact.js';
 
 const state = resolve('.localmcp');
 await mkdir(state, {recursive:true, mode:0o700});
@@ -58,7 +59,7 @@ if (!ready || closing) {stop(1);} else {
       printed = true; clearTimeout(timeout);
       const url = `${origin}/mcp/${token}`;
       await writeFile(resolve(state,'connection.json'),JSON.stringify({url,authentication:'none',root:process.env.LOCALMCP_ROOT || process.cwd()},null,2),{mode:0o600});
-      console.log(`\nChatGPT 插件名称: localmcp\n服务器 URL: ${url}\n身份验证: 无 (None)\n连接信息: ${resolve(state,'connection.json')}\n保持此进程运行，Ctrl+C 同时停止服务与隧道。\n`);
+      console.log(`\nChatGPT 插件名称: localmcp\n服务器 URL: ${redactMcpUrl(url)}\n完整地址已写入 ${resolve(state,'connection.json')}（权限 600）。终端和日志不显示密钥。\n身份验证: 无 (None)\n保持此进程运行，Ctrl+C 同时停止服务与隧道。\n`);
     }
   }
   tunnel.stdout?.on('data', chunk => void output(chunk).catch(e => {console.error(e.message); stop(1);}));
